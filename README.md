@@ -95,7 +95,10 @@ Commands (per persona prefix)
 
 Planned
 
-- Multi-platform supervisor: run the same persona across Discord and other platforms concurrently via `llm-chatbot multi run --platforms discord,slack`.
+- Multi-platform supervisor: run the same persona across Discord and other platforms concurrently via `llm-chatbot multi run --platforms discord,slack`. See issue #3.
+- Slack integration: first-class adapter and `slack run` subcommand. See issue #2.
+- Logging improvements: phased verbosity, JSON logs, redaction, usage summaries. See issue #4.
+- Docker packaging: official image and compose example. See issue #5.
 
 Documentation
 
