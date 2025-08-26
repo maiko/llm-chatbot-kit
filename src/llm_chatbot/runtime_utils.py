@@ -9,11 +9,13 @@ from typing import Any, Tuple
 try:  # pragma: no cover - exercised implicitly by imports
     import discord  # type: ignore
 except Exception:  # pragma: no cover - fallback when discord isn't installed
+
     class _StubStatus:
         offline = "offline"
 
     class discord:  # type: ignore
         Status = _StubStatus
+
 
 from .config import Config
 from .memory import MemoryStore

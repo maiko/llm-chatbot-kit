@@ -292,4 +292,3 @@ def moderate_text(api_key: str, model: str, text: str) -> bool:
     except Exception:
         # Fail open (allow) if moderation endpoint not available
         return True
-

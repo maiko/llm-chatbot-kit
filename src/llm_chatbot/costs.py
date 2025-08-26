@@ -68,4 +68,3 @@ def rollover_if_needed(b: Billing) -> None:
     if b.monthly_key != ym:
         b.monthly_key = ym
         b.monthly_usd = 0.0
-

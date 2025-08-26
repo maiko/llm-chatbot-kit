@@ -78,4 +78,3 @@ def write_json(path: Path, data: dict) -> None:
     temp = path.with_suffix(".tmp")
     temp.write_text(json.dumps(data, ensure_ascii=False))
     temp.replace(path)
-

@@ -89,4 +89,3 @@ def mark_intervened(guild_settings: dict, channel_id: int, author_id: int | None
     if author_id is not None:
         um = guild_settings.setdefault("last_user_ts", {})
         um[str(author_id)] = _now()
-

@@ -122,4 +122,3 @@ class MemoryStore:
         if monthly_usd is not None:
             self._billing.budget_monthly_usd = monthly_usd
         self.save()
-

@@ -54,4 +54,3 @@ def load_i18n(lang: str | None, overrides: Dict[str, str] | None = None) -> I18n
         base.update(overrides)
 
     return I18n(lang=code, messages=base)
-

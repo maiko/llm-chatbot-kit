@@ -116,10 +116,7 @@ def main() -> None:
         cfg = load_config()
         if getattr(args, "model", None):
             cfg.openai_model = args.model
-        personality = (
-            load_personality(args.personality) if getattr(args, "personality", None) else DEFAULT_PERSONALITY
-        )
+        personality = load_personality(args.personality) if getattr(args, "personality", None) else DEFAULT_PERSONALITY
         run(cfg, personality, stream=_stream_flag_from(args))
     else:  # pragma: no cover - reserved for future platforms
         raise SystemExit(f"Unsupported platform: {platform}")
-

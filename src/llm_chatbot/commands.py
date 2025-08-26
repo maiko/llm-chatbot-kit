@@ -213,4 +213,3 @@ def register_commands(
         gs["truncation"] = v
         store.save()
         await ctx_cmd.send(i18n.t("truncation_set", value=v))
-

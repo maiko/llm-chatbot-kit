@@ -281,4 +281,3 @@ async def send_stream_as_messages(
         await _send_chunks(channel, tail, MAX_LEN, allowed_mentions=allowed_mentions)
 
     return full
-
