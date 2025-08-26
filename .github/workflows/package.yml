@@ -1,9 +1,9 @@
 name: Build Package
 
 on:
-  # Build on PRs (to validate packaging) and on version tags for releases.
-  pull_request:
+  # Build package on main and on version tags for releases.
   push:
+    branches: [ 'main' ]
     tags: [ 'v*' ]
   workflow_dispatch:
 
