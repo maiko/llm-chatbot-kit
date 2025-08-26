@@ -1,0 +1,60 @@
+site_name: LLM Chatbot Kit
+site_description: Developer-first kit for LLM chatbots with streaming, memory, and personas (Discord-first).
+site_url: https://maiko.github.io/llm-chatbot-kit/
+repo_url: https://github.com/maiko/llm-chatbot-kit
+repo_name: maiko/llm-chatbot-kit
+
+theme:
+  name: material
+  logo: assets/logo.svg
+  favicon: assets/icon.svg
+  features:
+    - navigation.instant
+    - navigation.sections
+    - navigation.top
+    - content.code.copy
+    - header.autohide
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+
+nav:
+  - Overview: index.md
+  - Getting Started:
+      - Installation: Installation.md
+      - Configuration: Configuration.md
+      - Personalities: Personality.md
+      - Streaming: Streaming.md
+      - Listening (Experimental): Listening.md
+      - Commands: Commands.md
+  - Development:
+      - Architecture: Architecture.md
+      - Development Guide: Development.md
+      - Costs: Costs.md
+      - Packaging: Packaging.md
+      - Security: Security.md
+      - Troubleshooting: Troubleshooting.md
+  - Changelog: Changelog.md
+
+markdown_extensions:
+  - toc:
+      permalink: true
+  - admonition
+  - codehilite
+
+plugins:
+  - search
+
+docs_dir: docs

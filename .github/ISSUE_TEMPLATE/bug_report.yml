@@ -1,0 +1,110 @@
+name: "Bug report"
+description: "Report a bug in llm-chatbot-kit"
+title: "bug: <short summary>"
+labels: ["bug"]
+assignees: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug! Please provide as much detail as possible.
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Pre-checks
+      options:
+        - label: I searched existing issues and discussions
+          required: true
+        - label: I’m using the latest main (or latest release)
+          required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Package version
+      description: Output of `pip show llm-chatbot-kit` or git commit/branch
+      placeholder: e.g., 0.1.0 or main@abcdef
+    validations:
+      required: true
+
+  - type: input
+    id: python
+    attributes:
+      label: Python version
+      placeholder: e.g., 3.11.9
+    validations:
+      required: true
+
+  - type: textarea
+    id: env
+    attributes:
+      label: Environment
+      description: OS, install method (pip/pipx), and relevant env vars set
+      placeholder: macOS 14, pipx; OPENAI_MODEL=gpt-5-mini; OPENAI_VERBOSITY=low
+    validations:
+      required: true
+
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - discord
+        - other (future)
+    validations:
+      required: true
+
+  - type: textarea
+    id: command
+    attributes:
+      label: CLI command used
+      placeholder: |
+        e.g.,
+        llm-chatbot discord run --personality personalities/aelita.yml --model gpt-5-mini
+
+  - type: textarea
+    id: persona
+    attributes:
+      label: Personality details (YAML snippet)
+      description: Include relevant parts of the personality file (system/developer prompts, listen/truncation settings)
+      render: yaml
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Be as specific as possible
+      placeholder: |
+        1. Start the bot
+        2. Mention the bot with message '...'
+        3. Observe error/behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs/traceback
+      description: Please include sanitized logs (no secrets)
+      render: shell
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Additional context
+

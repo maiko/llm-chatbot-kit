@@ -1,0 +1,45 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Env files / local config
+.env
+.env.*
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+*.egg
+
+# IDE/editor
+.idea/
+.vscode/
+*.code-workspace
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local test/coverage reports
+.coverage*
+coverage.xml
+htmlcov/
+
+# Personalities: ignore all except curated demos
+personalities/*
+!personalities/aelita.yml
+!personalities/xana.yml
+
+# Optional local runtime files
+context.json

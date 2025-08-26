@@ -1,0 +1,53 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "llm-chatbot-kit"
+version = "0.1.0"
+description = "Developer-first kit for LLM chatbots with streaming, memory, and personas (Discord-first)"
+readme = "README.md"
+requires-python = ">=3.9"
+authors = [{ name = "Maiko BOSSUYT", email = "hello@maiko-bossuyt.eu" }]
+dependencies = [
+  "discord.py>=2.3",
+  "openai>=1.40.0",
+  "PyYAML>=6.0",
+  "coloredlogs>=15.0",
+]
+
+[project.scripts]
+llm-chatbot = "llm_chatbot.cli:main"
+llm-bot = "llm_chatbot.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"llm_chatbot" = [
+  "locales/*.yml",
+]
+
+[tool.black]
+line-length = 140
+target-version = ["py39"]
+include = "src|tests"
+
+[tool.ruff]
+line-length = 140
+target-version = "py39"
+src = ["src", "tests"]
+respect-gitignore = true
+
+# Keep defaults minimal; extend if needed:
+[tool.ruff.lint]
+select = [
+  "E",  # pycodestyle errors
+  "F",  # pyflakes
+  "W",  # pycodestyle warnings
+  "I",  # isort
+]
+ignore = []

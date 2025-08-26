@@ -1,0 +1,49 @@
+name: "Feature request"
+description: "Suggest an idea for llm-chatbot-kit"
+title: "feat: <short summary>"
+labels: ["enhancement"]
+assignees: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the suggestion! Help us understand the use case and scope.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem statement
+      description: What problem are you trying to solve?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution / API
+      description: Describe the change, CLI/API shape, flags, or behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Scope
+      options:
+        - label: CLI/UX
+        - label: Discord runtime
+        - label: Multi-platform (future)
+        - label: OpenAI integration
+        - label: Streaming
+        - label: Docs
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Additional context
+

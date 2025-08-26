@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 240" role="img" aria-label="LLM Chatbot Kit" preserveAspectRatio="xMidYMid meet">
+  <defs>
+    <style>
+      :root { --indigo: #4F46E5; --cyan: #22D3EE; --ink: #111827; }
+      @media (prefers-color-scheme: dark) {
+        :root { --ink: #E5E7EB; }
+      }
+      .bubble { fill: none; stroke: var(--indigo); stroke-width: 10; stroke-linecap: round; stroke-linejoin: round; }
+      .stream { fill: none; stroke: var(--cyan); stroke-width: 8; stroke-linecap: round; }
+      .word { fill: var(--ink); font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, "Helvetica Neue", Arial, "Noto Sans", "Apple Color Emoji", "Segoe UI Emoji"; font-weight: 700; letter-spacing: 0.5px; }
+      .sub { fill: var(--ink); font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, "Helvetica Neue", Arial, "Noto Sans"; font-weight: 500; opacity: .7; }
+    </style>
+  </defs>
+  <!-- Icon -->
+  <g transform="translate(16,28)">
+    <path class="bubble" d="M40 16h220a32 32 0 0 1 32 32v56a32 32 0 0 1-32 32H156l-44 32v-32H72a32 32 0 0 1-32-32V48a32 32 0 0 1 32-32z"/>
+    <!-- streaming lines -->
+    <path class="stream" d="M96 72h168"/>
+    <path class="stream" d="M96 100h112"/>
+    <path class="stream" d="M96 44h88"/>
+  </g>
+  <!-- Wordmark -->
+  <g transform="translate(360,140)">
+    <text class="word" font-size="44" x="0" y="0">LLM Chatbot Kit</text>
+    <text class="sub" font-size="20" x="0" y="38">Streaming • Memory • Personas</text>
+  </g>
+</svg>

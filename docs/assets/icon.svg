@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 160" role="img" aria-label="LLM Chatbot Kit icon" preserveAspectRatio="xMidYMid meet">
+  <defs>
+    <style>
+      .bubble { fill: none; stroke: #4F46E5; stroke-width: 8; stroke-linecap: round; stroke-linejoin: round; }
+      .stream { fill: none; stroke: #22D3EE; stroke-width: 6; stroke-linecap: round; }
+    </style>
+  </defs>
+  <path class="bubble" d="M16 28h104a16 16 0 0 1 16 16v44a16 16 0 0 1-16 16H72l-24 22v-22H36a16 16 0 0 1-16-16V44a16 16 0 0 1 16-16z"/>
+  <path class="stream" d="M40 60h84"/>
+  <path class="stream" d="M40 84h60"/>
+  <path class="stream" d="M40 36h44"/>
+</svg>
