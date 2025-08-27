@@ -21,7 +21,7 @@ from .config import Config
 from .memory import MemoryStore
 from .personality import Personality
 
-logger = logging.getLogger("llm-chatbot-kit")
+logger = logging.getLogger(__name__)
 
 
 def _chunk_message(text: str, limit: int = 1990) -> list[str]:
