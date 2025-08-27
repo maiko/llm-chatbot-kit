@@ -11,6 +11,7 @@ This module exposes two primitives:
 from __future__ import annotations
 
 import asyncio
+import logging
 import random
 import re
 import time
@@ -19,8 +20,11 @@ from typing import Any, AsyncIterator, Dict, List, Optional
 import discord
 from discord.errors import HTTPException
 
+from .logging_setup import get_trace_openai_mode
+
 # Boundaries where we prefer to flush chunks
 BOUNDARY_NEWLINES = re.compile(r"\n+")
+logger = logging.getLogger(__name__)
 BOUNDARY_PUNCT_WS = re.compile(r"(?<=[.!?…])\s+")
 
 
@@ -102,6 +106,7 @@ async def stream_deltas(
             kwargs["text"] = {"format": {"type": "text"}, "verbosity": verbosity}
         if truncation:
             kwargs["truncation"] = truncation
+        started = time.perf_counter()
         with client.responses.stream(**kwargs) as stream:
             for event in stream:
                 if event.type == "response.output_text.delta":
@@ -113,6 +118,31 @@ async def stream_deltas(
                 ot = int(getattr(usage, "output_tokens", 0) or 0)
                 cit = int(getattr(usage, "cache_creation_input_tokens", 0) or 0)
                 stream_obj.set_usage((it, ot, cit))
+                if get_trace_openai_mode() != "off":
+                    dur_ms = int((time.perf_counter() - started) * 1000)
+                    rid = getattr(final, "id", None)
+                    logger.info(
+                        "trace-openai: path=%s model=%s latency_ms=%d input=%d output=%d cached=%d req_id=%s",
+                        "responses.stream",
+                        model,
+                        dur_ms,
+                        it,
+                        ot,
+                        cit,
+                        str(rid) if rid is not None else "",
+                        extra={
+                            "trace": {
+                                "type": "openai",
+                                "mode": "meta",
+                                "path": "responses.stream",
+                                "phase": "chat",
+                                "model": model,
+                                "latency_ms": dur_ms,
+                                "request_id": rid,
+                                "usage": {"input": it, "output": ot, "cached": cit},
+                            }
+                        },
+                    )
             except Exception:
                 stream_obj.set_usage((0, 0, 0))
         stream_obj.close()
