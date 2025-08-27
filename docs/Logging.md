@@ -1,3 +1,24 @@
+Logging
+
+Phase 1
+- Verbosity: -v/--verbose, -q/--quiet, --log-level
+- Formats: --log-format text|json (default text)
+- Secret redaction: always on
+- Consistent module loggers
+
+Phase 2
+- Per-module levels (exact matching)
+  - --log-levels module=LEVEL[,module=LEVEL…]
+  - Env: LLM_LOG_LEVELS="llm_chatbot.openai_client=DEBUG,llm_chatbot.streaming=WARNING"
+  - Matching is exact. No prefix/glob expansion.
+- OpenAI tracing
+  - --trace-openai off|meta|full (default meta; env LLM_TRACE_OPENAI)
+  - meta logs model, path, latency_ms, usage (input/output/cached), request_id
+  - full additionally logs inputs/outputs with redaction applied
+  - Text format example:
+    - trace-openai: path=responses.create model=gpt-5-mini latency_ms=123 input=42 output=17 cached=0 req_id=req_123
+  - JSON format example (extra.trace):
+    - {"trace":{"type":"openai","mode":"meta","path":"responses.create","phase":"chat","model":"gpt-5-mini","latency_ms":123,"request_id":"req_123","usage":{"input":42,"output":17,"cached":0}}}
 # Logging
 
 Phase 1 introduces safer, more ergonomic logging.

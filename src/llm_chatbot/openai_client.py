@@ -1,3 +1,14 @@
+from __future__ import annotations
+
+import json
+import logging
+import time
+from typing import Any, Dict, List, Optional, Tuple
+
+from .logging_setup import get_trace_openai_mode
+
+logger = logging.getLogger(__name__)
+
 """Minimal wrappers around OpenAI SDK usage for this bot.
 
 Highlights
@@ -7,11 +18,93 @@ Highlights
   usage information consistently across SDK variants.
 """
 
-from __future__ import annotations
 
-import json
-import logging
-from typing import Any, Dict, List, Optional, Tuple
+def _now() -> float:
+    return time.perf_counter()
+
+
+def _trace_meta(
+    path: str,
+    model: str,
+    started: float,
+    resp_obj: object,
+    usage: dict | tuple[int, int, int] | None = None,
+    phase: str | None = None,
+) -> None:
+    if get_trace_openai_mode() == "off":
+        return
+    try:
+        dur_ms = int((time.perf_counter() - started) * 1000)
+        req_id = getattr(resp_obj, "id", None)
+        tin = 0
+        tout = 0
+        tcached = 0
+        if isinstance(usage, tuple) and len(usage) >= 2:
+            tin, tout = int(usage[0] or 0), int(usage[1] or 0)
+            tcached = int((usage[2] if len(usage) > 2 else 0) or 0)
+        else:
+            u = usage or {}
+            try:
+                tin = int(u.get("input_tokens", 0) or 0)  # type: ignore[call-arg]
+                tout = int(u.get("output_tokens", 0) or 0)  # type: ignore[call-arg]
+                tcached = int(u.get("cache_creation_input_tokens", 0) or 0)  # type: ignore[call-arg]
+            except Exception:
+                tin = tin
+                tout = tout
+                tcached = tcached
+        msg = "trace-openai: path=%s model=%s latency_ms=%d input=%d output=%d cached=%d req_id=%s"
+        logger.info(
+            msg,
+            path,
+            model,
+            dur_ms,
+            tin,
+            tout,
+            tcached,
+            str(req_id) if req_id is not None else "",
+            extra={
+                "trace": {
+                    "type": "openai",
+                    "mode": "meta",
+                    "path": path,
+                    "phase": phase or "",
+                    "model": model,
+                    "latency_ms": dur_ms,
+                    "request_id": req_id,
+                    "usage": {"input": tin, "output": tout, "cached": tcached},
+                }
+            },
+        )
+    except Exception:
+        pass
+
+
+def _trace_full(path: str, model: str, inputs: object | None = None, outputs: object | None = None, phase: str | None = None) -> None:
+    if get_trace_openai_mode() != "full":
+        return
+    try:
+        ilen = 0
+        olen = 0
+        try:
+            ilen = len(str(inputs)) if inputs is not None else 0
+        except Exception:
+            ilen = 0
+        try:
+            olen = len(str(outputs)) if outputs is not None else 0
+        except Exception:
+            olen = 0
+        logger.info(
+            "trace-openai-full: path=%s model=%s inputs_len=%d outputs_len=%d phase=%s inputs=%r outputs=%r",
+            path,
+            model,
+            ilen,
+            olen,
+            phase or "",
+            inputs,
+            outputs,
+        )
+    except Exception:
+        pass
 
 
 def _extract_responses_output(resp) -> Optional[str]:
@@ -148,9 +241,15 @@ def chat_complete_with_usage(
                 rkw["text"] = {"format": {"type": "text"}, "verbosity": verbosity}
         if truncation:
             rkw["truncation"] = truncation
+        _t0 = time.perf_counter()
         resp = client.responses.create(**rkw)
         out = _extract_responses_output(resp) or ""
         usage = extract_usage(resp)
+        try:
+            _trace_meta("responses.create", model, _t0, resp, usage, phase="chat")
+            _trace_full("responses.create", model, inputs=rkw, outputs=out, phase="chat")
+        except Exception:
+            pass
         return out, usage
     except Exception as e:
         last_err = e
@@ -161,9 +260,15 @@ def chat_complete_with_usage(
 
         client = OpenAI(api_key=api_key)
         ck = {"model": model, "messages": messages}
+        _t1 = time.perf_counter()
         resp = client.chat.completions.create(**ck)
         out = resp.choices[0].message.content or ""
         usage = extract_usage(resp)
+        try:
+            _trace_meta("chat.completions.create", model, _t1, resp, usage, phase="chat")
+            _trace_full("chat.completions.create", model, inputs=ck, outputs=out, phase="chat")
+        except Exception:
+            pass
         return out, usage
     except Exception as e:
         raise RuntimeError(f"OpenAI request failed: {e if e else last_err}")
@@ -237,8 +342,14 @@ def judge_intervention(api_key: str, model: str, context_messages: List[Dict[str
                 verbosity="low",
                 truncation=None,
             )
+            started = _now()
             resp = client.responses.create(**kwargs)
             out = _extract_responses_output(resp) or "{}"
+            try:
+                _trace_meta("responses.create", model, started, resp, extract_usage(resp), phase="judge")
+                _trace_full("responses.create", model, inputs=kwargs, outputs=out, phase="judge")
+            except Exception:
+                pass
             intervene, intent, conf = _parse_json(out)
             return (intervene and conf >= threshold), intent, conf
         except Exception as e_responses:
@@ -248,8 +359,14 @@ def judge_intervention(api_key: str, model: str, context_messages: List[Dict[str
                 prompt = [{"role": "system", "content": instruction}]
                 prompt.extend(context_messages[-5:])
                 # Omit temperature to satisfy models that only allow the default (1)
+                started_cc = _now()
                 resp_cc = client.chat.completions.create(model=model, messages=prompt)
                 txt = resp_cc.choices[0].message.content or "{}"
+                try:
+                    _trace_meta("chat.completions.create", model, started_cc, resp_cc, extract_usage(resp_cc), phase="judge")
+                    _trace_full("chat.completions.create", model, inputs={"model": model, "messages": prompt}, outputs=txt, phase="judge")
+                except Exception:
+                    pass
                 intervene, intent, conf = _parse_json(txt)
                 return (intervene and conf >= threshold), intent, conf
             except Exception as e_cc:
@@ -265,8 +382,14 @@ def judge_intervention(api_key: str, model: str, context_messages: List[Dict[str
                 verbosity="low",
                 truncation=None,
             )
+            started_fb = _now()
             resp_fb = client.responses.create(**kwargs_fb)
             out_fb = _extract_responses_output(resp_fb) or "{}"
+            try:
+                _trace_meta("responses.create", fallback_model, started_fb, resp_fb, extract_usage(resp_fb), phase="judge-fallback")
+                _trace_full("responses.create", fallback_model, inputs=kwargs_fb, outputs=out_fb, phase="judge-fallback")
+            except Exception:
+                pass
             intervene, intent, conf = _parse_json(out_fb)
             logger.info("listen-judge: fallback model=%s used", fallback_model)
             return (intervene and conf >= threshold), intent, conf
@@ -284,9 +407,14 @@ def moderate_text(api_key: str, model: str, text: str) -> bool:
         from openai import OpenAI
 
         client = OpenAI(api_key=api_key)
+        started = _now()
         resp = client.moderations.create(model=model, input=text)
+        try:
+            _trace_meta("moderations.create", model, started, resp, extract_usage(resp), phase="moderate")
+            _trace_full("moderations.create", model, inputs={"model": model, "input": text}, outputs=None, phase="moderate")
+        except Exception:
+            pass
         result = resp.results[0]
-        # Block if flagged
         flagged = getattr(result, "flagged", False)
         return not flagged
     except Exception:

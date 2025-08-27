@@ -11,6 +11,8 @@ from typing import Any, Dict
 SECRET_ENV_PREFIXES = ("SLACK_",)
 SECRET_ENV_NAMES = ("OPENAI_API_KEY", "DISCORD_TOKEN")
 
+_TRACE_OPENAI_MODE = "meta"
+
 
 def _level_from_flags(explicit: str | None, vcount: int, quiet: bool, env_level: str | None) -> int:
     if explicit:
@@ -27,6 +29,34 @@ def _level_from_flags(explicit: str | None, vcount: int, quiet: bool, env_level:
     elif vcount == 1:
         base = logging.INFO
     return env_lvl if env_lvl is not None else base
+
+
+def parse_log_levels(spec: str | None) -> Dict[str, int]:
+    out: Dict[str, int] = {}
+    if not spec:
+        return out
+    parts = [p.strip() for p in spec.split(",") if p.strip()]
+    for p in parts:
+        if "=" not in p:
+            continue
+        name, lvl = p.split("=", 1)
+        name = name.strip()
+        lvl = lvl.strip().upper()
+        if not name:
+            continue
+        val = getattr(logging, lvl, None)
+        if isinstance(val, int):
+            out[name] = val
+    return out
+
+
+def apply_module_levels(levels: Dict[str, int]) -> None:
+    for name, lvl in levels.items():
+        logging.getLogger(name).setLevel(lvl)
+
+
+def get_trace_openai_mode() -> str:
+    return _TRACE_OPENAI_MODE
 
 
 class RedactionFilter(logging.Filter):
@@ -130,9 +160,20 @@ def _text_formatter() -> logging.Formatter:
     return logging.Formatter(fmt=fmt, datefmt=datefmt)
 
 
-def setup_logging(format_str: str | None, explicit_level: str | None, vcount: int, quiet: bool) -> None:
+def setup_logging(
+    format_str: str | None,
+    explicit_level: str | None,
+    vcount: int,
+    quiet: bool,
+    *,
+    log_levels: Dict[str, int] | None = None,
+    trace_openai: str | None = None,
+) -> None:
+    global _TRACE_OPENAI_MODE
     env_level = os.environ.get("LLM_LOG_LEVEL")
     env_format = os.environ.get("LLM_LOG_FORMAT")
+    env_levels = os.environ.get("LLM_LOG_LEVELS")
+    env_trace = os.environ.get("LLM_TRACE_OPENAI")
     fmt = (format_str or env_format or "text").lower()
     level = _level_from_flags(explicit_level, vcount, quiet, env_level)
 
@@ -150,9 +191,29 @@ def setup_logging(format_str: str | None, explicit_level: str | None, vcount: in
     root.addHandler(handler)
     root.setLevel(level)
 
+    levels_map = log_levels if log_levels is not None else parse_log_levels(env_levels)
+    if levels_map:
+        apply_module_levels(levels_map)
+
+    mode = (trace_openai or env_trace or "meta").lower()
+    if mode not in ("off", "meta", "full"):
+        mode = "meta"
+    _TRACE_OPENAI_MODE = mode
+
 
 def add_logging_cli_flags(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("-v", "--verbose", action="count", default=0, help="Increase verbosity (-v INFO, -vv DEBUG)")
     parser.add_argument("-q", "--quiet", action="store_true", help="Quiet mode (WARNING)")
     parser.add_argument("--log-level", "-l", default=os.environ.get("LOG_LEVEL"), help="Explicit log level (DEBUG|INFO|WARNING|ERROR)")
     parser.add_argument("--log-format", choices=["text", "json"], default=None, help="Log format (default: text; env LLM_LOG_FORMAT)")
+    parser.add_argument(
+        "--log-levels",
+        default=None,
+        help=("Per-module levels (exact match): module=LEVEL[,module=LEVEL...] " "or env LLM_LOG_LEVELS"),
+    )
+    parser.add_argument(
+        "--trace-openai",
+        choices=["off", "meta", "full"],
+        default=None,
+        help="OpenAI tracing (default: env LLM_TRACE_OPENAI or meta)",
+    )

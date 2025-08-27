@@ -16,7 +16,7 @@ import sys
 
 from .config import load_config
 from .discord_bot import run
-from .logging_setup import add_logging_cli_flags, setup_logging
+from .logging_setup import add_logging_cli_flags, parse_log_levels, setup_logging
 from .personality import DEFAULT_PERSONALITY, load_personality
 
 
@@ -106,6 +106,8 @@ def main() -> None:
         getattr(args, "log_level", None),
         int(getattr(args, "verbose", 0) or 0),
         bool(getattr(args, "quiet", False)),
+        log_levels=parse_log_levels(getattr(args, "log_levels", None) or os.environ.get("LLM_LOG_LEVELS")),
+        trace_openai=getattr(args, "trace_openai", None) or os.environ.get("LLM_TRACE_OPENAI"),
     )
 
     if platform == "discord":
