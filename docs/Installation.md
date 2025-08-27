@@ -21,3 +21,5 @@ Environment variables
 - DISCORD_OWNER_ID: optional; allows ~reboot in servers where you’re the owner
 - COMMAND_PREFIX: default ~
 - MAX_TURNS: default 20
+Docker
+- See the “Run in Docker” section in the README for the official image and examples.
