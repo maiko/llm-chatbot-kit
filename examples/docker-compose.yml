@@ -1,0 +1,11 @@
+services:
+  bot:
+    image: ghcr.io/maiko/llm-chatbot-kit:latest
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      OPENAI_MODEL: gpt-5-mini
+    volumes:
+      - ./data:/data
+    command: ["llm-chatbot", "discord", "run", "--personality", "personalities/aelita.yml"]

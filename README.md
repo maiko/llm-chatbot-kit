@@ -76,6 +76,44 @@ Create a new personality
   ```
 - Run with `--personality path/to/your.yml`.
 
+Run in Docker
+
+Official image: `ghcr.io/maiko/llm-chatbot-kit:latest`
+
+Docker run
+
+```bash
+docker run --rm \
+  -e DISCORD_TOKEN=... \
+  -e OPENAI_API_KEY=... \
+  -e OPENAI_MODEL=gpt-5-mini \
+  -v $(pwd)/data:/data \
+  ghcr.io/maiko/llm-chatbot-kit:latest \
+  llm-chatbot discord run --personality personalities/aelita.yml
+```
+
+Compose example
+
+See `examples/docker-compose.yml` and `examples/.env.example`:
+```yaml
+services:
+  bot:
+    image: ghcr.io/maiko/llm-chatbot-kit:latest
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      OPENAI_MODEL: gpt-5-mini
+    volumes:
+      - ./data:/data
+    command: ["llm-chatbot", "discord", "run", "--personality", "personalities/aelita.yml"]
+```
+
+Notes
+
+- Runs as non‑root (uid 1000). Data and cache are stored under `/data` (mapped via `XDG_CACHE_HOME=/data`), so bind-mount `./data:/data` to persist context.
+- Required env: `DISCORD_TOKEN`, `OPENAI_API_KEY`. Optionals: `OPENAI_MODEL`, `OPENAI_VERBOSITY`, `DISCORD_OWNER_ID`, `COMMAND_PREFIX`, `MAX_TURNS`, `PERSONALITY_FILE`.
+- To use a custom personality, mount it and set `PERSONALITY_FILE` (e.g., mount to `/config/custom.yml` and run with `--personality /config/custom.yml`).
 Notes
 
 - Messages are stored in a JSON file under `~/.cache/llm-chatbot-kit/context.json` (or `CONTEXT_STORE_PATH`). On first run, the kit migrates an existing `~/.cache/discord-llm-bot/context.json` automatically.
