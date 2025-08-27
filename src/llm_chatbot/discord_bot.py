@@ -34,7 +34,7 @@ from .runtime_utils import (
 )
 from .streaming import send_stream_as_messages, stream_deltas
 
-logger = logging.getLogger("llm-chatbot-kit")
+logger = logging.getLogger(__name__)
 
 
 # `_chunk_message` moved to `runtime_utils` for reuse and clarity.
@@ -394,13 +394,15 @@ def run(cfg: Config, personality: Personality, *, stream: bool = True) -> None:
             feat = "listen" if intervened else "mention_or_dm"
             store.billing.by_feature[feat] = store.billing.by_feature.get(feat, 0.0) + cost
             logger.info(
-                "usage: model=%s input=%d output=%d cached=%d cost=$%.4f feature=%s",
+                "usage model=%s input=%d output=%d cached=%d cost=$%.4f feature=%s channel=%s guild=%s",
                 used_model,
                 input_tokens,
                 output_tokens,
                 cached_tokens,
                 cost,
                 feat,
+                getattr(message.channel, "id", None),
+                getattr(message.guild, "id", None),
             )
             await _maybe_alert_owner(bot, cfg, store, i18n)
         except Exception:

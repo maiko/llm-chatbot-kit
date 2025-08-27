@@ -11,14 +11,12 @@ Backward compatibility:
 from __future__ import annotations
 
 import argparse
-import logging
 import os
 import sys
 
-import coloredlogs
-
 from .config import load_config
 from .discord_bot import run
+from .logging_setup import add_logging_cli_flags, setup_logging
 from .personality import DEFAULT_PERSONALITY, load_personality
 
 
@@ -29,12 +27,7 @@ def _add_common_options(parser: argparse.ArgumentParser) -> None:
         help="Path to YAML personality file",
         default=os.environ.get("PERSONALITY_FILE"),
     )
-    parser.add_argument(
-        "--log-level",
-        "-l",
-        default=os.environ.get("LOG_LEVEL", "INFO"),
-        help="Logging level (DEBUG, INFO, WARNING, ERROR)",
-    )
+    add_logging_cli_flags(parser)
     parser.add_argument(
         "--model",
         help="OpenAI model to use (default: env OPENAI_MODEL or gpt-5-mini)",
@@ -108,10 +101,13 @@ def _stream_flag_from(ns: argparse.Namespace) -> bool:
 def main() -> None:
     """Entry point for the `llm-chatbot` and legacy `llm-bot` CLIs."""
     platform, args = parse_args()
-    level = getattr(logging, str(getattr(args, "log_level", "INFO")).upper(), logging.INFO)
-    coloredlogs.install(level=level)
+    setup_logging(
+        getattr(args, "log_format", None),
+        getattr(args, "log_level", None),
+        int(getattr(args, "verbose", 0) or 0),
+        bool(getattr(args, "quiet", False)),
+    )
 
-    # Today we only support Discord; platform router is future-proofed
     if platform == "discord":
         cfg = load_config()
         if getattr(args, "model", None):

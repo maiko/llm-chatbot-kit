@@ -203,7 +203,7 @@ def judge_intervention(api_key: str, model: str, context_messages: List[Dict[str
     (bool, str, float)
         (intervene, intent, confidence)
     """
-    logger = logging.getLogger("llm-chatbot-kit")
+    logger = logging.getLogger(__name__)
 
     # Strategy: Prefer Responses API; if model is invalid or unsupported, fallback to a small widely-available model.
     # Always try to return a parsed decision rather than failing silently.

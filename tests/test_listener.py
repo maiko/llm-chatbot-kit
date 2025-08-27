@@ -1,5 +1,5 @@
 from llm_chatbot.listener import should_intervene
-from llm_chatbot.personality import Personality, ListenConfig
+from llm_chatbot.personality import ListenConfig, Personality
 
 
 def _persona(min_len=1, triggers=None):

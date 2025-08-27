@@ -1,11 +1,9 @@
-import types
-
+from llm_chatbot.personality import Personality
 from llm_chatbot.runtime_utils import (
     _chunk_message,
     _effective_model_and_params,
     _effective_truncation,
 )
-from llm_chatbot.personality import Personality, ListenConfig
 
 
 class FakeStore:
