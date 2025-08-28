@@ -10,6 +10,20 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, Optional
+@dataclass
+class TriggerConfig:
+    enabled: bool = False
+    on_mention: bool = True
+    words: Optional[list] = None
+    use_regex: bool = False
+
+
+@dataclass
+class ContextConfig:
+    include_last_n: int = 10
+    include_non_addressed_messages: bool = True
+    scope: Optional[str] = "channel"
+
 
 
 @dataclass
@@ -68,6 +82,8 @@ class Personality:
     # Optional message overrides (i18n keys)
     messages: Optional[Dict[str, str]] = None
     listen: ListenConfig = field(default_factory=ListenConfig)
+    triggers: TriggerConfig = field(default_factory=TriggerConfig)
+    context: ContextConfig = field(default_factory=ContextConfig)
     # Optional: include online members list
     env_include_online_members: bool = False
     env_online_limit: int = 50
@@ -115,6 +131,21 @@ def load_personality(path: str | Path) -> Personality:
         moderation_model=_listen.get("moderation_model", "omni-moderation-latest"),
     )
 
+    _trig = data.get("triggers", {}) or {}
+    triggers = TriggerConfig(
+        enabled=bool(_trig.get("enabled", False)),
+        on_mention=bool(_trig.get("on_mention", True)),
+        words=_trig.get("words"),
+        use_regex=bool(_trig.get("use_regex", False)),
+    )
+
+    _ctx = data.get("context", {}) or {}
+    context = ContextConfig(
+        include_last_n=int(_ctx.get("include_last_n", 10)),
+        include_non_addressed_messages=bool(_ctx.get("include_non_addressed_messages", True)),
+        scope=_ctx.get("scope", "channel"),
+    )
+
     return Personality(
         name=data.get("name", p.stem),
         system_prompt=data["system_prompt"],
@@ -131,6 +162,8 @@ def load_personality(path: str | Path) -> Personality:
         env_emojis_limit=int(environment.get("emojis_limit", 20)),
         messages=data.get("messages"),
         listen=listen,
+        triggers=triggers,
+        context=context,
         env_include_online_members=bool(environment.get("include_online_members", False)),
         env_online_limit=int(environment.get("online_limit", 50)),
     )

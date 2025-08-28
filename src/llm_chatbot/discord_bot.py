@@ -10,6 +10,7 @@ import asyncio
 import logging
 from typing import List
 
+import re
 import discord
 from discord.ext import commands
 
@@ -136,6 +137,25 @@ def run(cfg: Config, personality: Personality, *, stream: bool = True) -> None:
         is_mentioned = bot.user and bot.user.mentioned_in(message)
         content = (message.content or "").strip()
 
+        word_triggered = False
+        try:
+            if getattr(personality, "triggers", None) and personality.triggers.enabled:
+                words = personality.triggers.words or []
+                if words:
+                    if personality.triggers.use_regex:
+                        for pat in words:
+                            try:
+                                if re.search(pat, content, flags=re.IGNORECASE):
+                                    word_triggered = True
+                                    break
+                            except Exception:
+                                continue
+                    else:
+                        low = content.lower()
+                        word_triggered = any((w or "").lower() in low for w in words if isinstance(w, str))
+        except Exception:
+            word_triggered = False
+
         logger.info(
             "on_message: mode=%s mention=%s guild=%s channel=%s author=%s content=%r",
             "DM" if is_dm else "GUILD",
@@ -153,7 +173,16 @@ def run(cfg: Config, personality: Personality, *, stream: bool = True) -> None:
             logger.info("command-detected: prefix=%s content=%r", effective_prefix, content[:80])
             return
         intervened = False
-        if not (is_dm or is_mentioned):
+
+        primary_trigger = False
+        try:
+            on_mention_enabled = getattr(personality, "triggers", None) is None or personality.triggers.on_mention
+        except Exception:
+            on_mention_enabled = True
+        if is_dm or (is_mentioned and on_mention_enabled) or word_triggered:
+            primary_trigger = True
+
+        if not primary_trigger:
             # Consider spontaneous intervention in guild channels
             if message.guild:
                 gs = store.guild_settings(message.guild.id)
@@ -249,7 +278,8 @@ def run(cfg: Config, personality: Personality, *, stream: bool = True) -> None:
         env_context = _build_env_context(message, personality, i18n)
 
         user_msg = f"{message.author.display_name}: {content}"
-        ctx.messages.append({"role": "user", "content": user_msg})
+        addressed_now = bool(primary_trigger)
+        ctx.messages.append({"role": "user", "content": user_msg, "addressed": addressed_now})
 
         if not intervened and ctx.turns >= cfg.max_turns:
             await message.channel.send(i18n.t("limit_reached", max_turns=cfg.max_turns, prefix=effective_prefix))
@@ -291,8 +321,33 @@ def run(cfg: Config, personality: Personality, *, stream: bool = True) -> None:
 
         # Decide whether to include meta based on truncation: hide when active (auto)
         truncation_active = effective_truncation == "auto"
+        try:
+            include_n = int(getattr(personality, "context", None).include_last_n) if getattr(personality, "context", None) else 10
+        except Exception:
+            include_n = 10
+        HARD_CAP = 50
+        include_n = max(1, min(include_n, HARD_CAP))
+        include_non_addr = True
+        try:
+            if getattr(personality, "context", None) is not None:
+                include_non_addr = bool(personality.context.include_non_addressed_messages)
+        except Exception:
+            include_non_addr = True
+
+        if include_non_addr:
+            history = ctx.messages[-include_n:]
+        else:
+            filtered = []
+            for m in ctx.messages:
+                r = m.get("role")
+                if r == "assistant":
+                    filtered.append(m)
+                elif r == "user" and m.get("addressed"):
+                    filtered.append(m)
+            history = filtered[-include_n:]
+
         convo = _conversation(
-            ctx.messages,
+            history,
             personality.system_prompt + (env_context or ""),
             dev_base,
             remaining,

@@ -1,3 +1,13 @@
+# Listening vs Triggers
+
+"Listening" is the optional, heuristic/judge-driven intervention path. It remains unchanged.
+
+"Triggers" are an explicit, config-driven generation path:
+- DM and/or mention (configurable via `triggers.on_mention`)
+- Word triggers (substring or regex) in any message (`triggers.enabled`, `triggers.words`, `triggers.use_regex`)
+
+If no trigger fires, listen heuristics may still intervene when enabled. These features are independent.
+
 # Listening (Experimental)
 
 Enable the bot to passively "listen" in servers and occasionally join conversations when it adds value or a good joke.

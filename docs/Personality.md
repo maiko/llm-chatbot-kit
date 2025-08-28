@@ -1,3 +1,28 @@
+# Personality: Triggers and Context
+
+## Triggers (mention and word triggers)
+Add a dedicated triggers block to control when the bot generates (separate from listen mode):
+```yaml
+triggers:
+  enabled: true
+  on_mention: true
+  words: ["assistant", "help"]   # case-insensitive substring by default
+  use_regex: false               # when true, treat words entries as regex patterns
+```
+- DM always triggers.
+- Mention triggers when `on_mention: true` (default).
+- Word triggers fire when any pattern matches a message, even without a mention.
+
+## Context (last-N messages)
+Control how many recent messages are included in the model input:
+```yaml
+context:
+  include_last_n: 12
+  include_non_addressed_messages: true
+```
+- `include_last_n`: number of recent messages to include (hard-capped at 50).
+- `include_non_addressed_messages`: when false, user messages are included only if they targeted the bot (mention or word trigger). Assistant messages are always included.
+
 # Personalities
 
 Define personas in YAML files and pass them via `--personality path.yml`.

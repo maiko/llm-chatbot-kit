@@ -47,6 +47,25 @@ Models & generation
 - Judge/classifier (listening): GPT‑5 nano.
 - GPT‑5 features used (except `gpt-5-chat-latest`):
   - `reasoning: { effort: "minimal" }` for faster time-to-first-token.
+### Triggers and Context (new)
+
+In addition to DMs and mentions, you can enable explicit word triggers and control the context window:
+
+```yaml
+triggers:
+  enabled: true
+  on_mention: true
+  words: ["assistant", "help"]
+  use_regex: false
+
+context:
+  include_last_n: 12
+  include_non_addressed_messages: true
+```
+
+- Word triggers match case-insensitive substrings by default; set `use_regex: true` to use regex patterns.
+- Context includes the last N messages (cap 50). If `include_non_addressed_messages: false`, only user messages that targeted the bot (mention/word trigger) are included; assistant messages are always included.
+
   - `text: { format: { type: "text" }, verbosity: <OPENAI_VERBOSITY> }` (default `low`).
 - Requests use the Responses API with typed items (developer/user/assistant). Chat Completions is kept only as a fallback.
 
