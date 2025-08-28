@@ -8,9 +8,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from typing import List
 
-import re
 import discord
 from discord.ext import commands
 

@@ -1,5 +1,5 @@
-from llm_chatbot.personality import Personality, TriggerConfig, ContextConfig
 from llm_chatbot.memory import ChannelContext
+from llm_chatbot.personality import ContextConfig, Personality, TriggerConfig
 
 
 def _persona(include_last_n=5, include_non_addressed=True):

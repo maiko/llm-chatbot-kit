@@ -10,6 +10,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, Optional
+
+
 @dataclass
 class TriggerConfig:
     enabled: bool = False
@@ -23,7 +25,6 @@ class ContextConfig:
     include_last_n: int = 10
     include_non_addressed_messages: bool = True
     scope: Optional[str] = "channel"
-
 
 
 @dataclass
