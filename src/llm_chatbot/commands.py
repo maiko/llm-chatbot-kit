@@ -146,28 +146,34 @@ def register_commands(
 
     @cost_group.command(name="status")
     async def cost_status(ctx_cmd: commands.Context):
-        rollover_if_needed(store.billing)
+        bot_user = getattr(ctx_cmd.bot, "user", None)
+        b = store.billing_for(getattr(bot_user, "id", 0)) if bot_user else store.billing
+        rollover_if_needed(b)
         reasoning = "effort=None" if (cfg.openai_model.startswith("gpt-5") or cfg.openai_model.startswith("o-")) else "disabled"
         await ctx_cmd.send(
             i18n.t(
                 "cost_status",
-                daily=f"${store.billing.daily_usd:.2f}",
-                monthly=f"${store.billing.monthly_usd:.2f}",
+                daily=f"${b.daily_usd:.2f}",
+                monthly=f"${b.monthly_usd:.2f}",
                 model=cfg.openai_model,
                 reasoning=reasoning,
             )
         )
 
-    @cost_group.command(name="budget")
-    async def cost_budget(ctx_cmd: commands.Context, scope: str, amount: float):
+    @cost_group.command(name="limit")
+    async def cost_limit(ctx_cmd: commands.Context, scope: str, amount: float):
         if cfg.owner_id and str(ctx_cmd.author.id) != str(cfg.owner_id):
             await ctx_cmd.send(i18n.t("owner_only"))
             return
+        bot_user = getattr(ctx_cmd.bot, "user", None)
+        b = store.billing_for(getattr(bot_user, "id", 0)) if bot_user else store.billing
         if scope.lower() == "daily":
-            store.set_budgets(daily_usd=amount, monthly_usd=None)
+            b.budget_daily_usd = float(amount)
+            store.save()
             await ctx_cmd.send(i18n.t("cost_budget_set", scope="daily", amount=f"${amount:.2f}"))
         elif scope.lower() == "monthly":
-            store.set_budgets(daily_usd=None, monthly_usd=amount)
+            b.budget_monthly_usd = float(amount)
+            store.save()
             await ctx_cmd.send(i18n.t("cost_budget_set", scope="monthly", amount=f"${amount:.2f}"))
         else:
             await ctx_cmd.send(i18n.t("cost_usage", prefix=effective_prefix))
@@ -178,9 +184,23 @@ def register_commands(
             await ctx_cmd.send(i18n.t("owner_only"))
             return
         v = value.lower() in ("on", "true", "1", "yes")
-        store.billing.hard_stop = v
+        bot_user = getattr(ctx_cmd.bot, "user", None)
+        b = store.billing_for(getattr(bot_user, "id", 0)) if bot_user else store.billing
+        b.hard_stop = v
         store.save()
         await ctx_cmd.send(i18n.t("cost_hardstop_set", value=str(v)))
+
+    @cost_group.command(name="pause")
+    async def cost_pause(ctx_cmd: commands.Context, value: str):
+        if cfg.owner_id and str(ctx_cmd.author.id) != str(cfg.owner_id):
+            await ctx_cmd.send(i18n.t("owner_only"))
+            return
+        bot_user = getattr(ctx_cmd.bot, "user", None)
+        b = store.billing_for(getattr(bot_user, "id", 0)) if bot_user else store.billing
+        v = value.lower() in ("on", "true", "1", "yes")
+        b.hard_stop = bool(v)
+        store.save()
+        await ctx_cmd.send(f"Pause set to {v}")
 
     # Truncation (per-guild) commands
     @bot.group(name="truncation", invoke_without_command=True)

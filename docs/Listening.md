@@ -15,6 +15,7 @@ Enable the bot to passively "listen" in servers and occasionally join conversati
 Behavior
 - Heuristics and optional judge decide if the bot should intervene.
 - Cooldowns and channel allow/deny guards avoid spam.
+- Send-side rate limiting also applies to all outbound messages to prevent loops.
 - Replies stream as natural bursts; tone follows the persona.
 
 Persona YAML (`listen`)

@@ -175,6 +175,20 @@ async def _send_chunks(channel, text: str, max_len: int, *, allowed_mentions: Op
                     raise
 
 
+async def _gate_allow(send_gate) -> bool:
+    if send_gate is None:
+        return True
+    try:
+        if callable(send_gate):
+            res = send_gate()
+            if hasattr(res, "__await__"):
+                return bool(await res)
+            return bool(res)
+    except Exception:
+        return False
+    return False
+
+
 async def send_stream_as_messages(
     channel,
     delta_iter: AsyncIterator[str],
@@ -185,6 +199,7 @@ async def send_stream_as_messages(
     strip_leading: Optional[List[str]] = None,
     allowed_mentions: Optional[discord.AllowedMentions] = None,
     max_total_chars: Optional[int] = None,
+    send_gate=None,
 ) -> str:
     """Send streamed text as natural bursts (no edits).
 
@@ -288,6 +303,8 @@ async def send_stream_as_messages(
                                 changed = True
                         if changed:
                             unsent = us
+                if not await _gate_allow(send_gate):
+                    return full
                 await _send_chunks(channel, unsent, MAX_LEN, allowed_mentions=allowed_mentions)
                 unsent = ""
                 last_send = now
@@ -308,6 +325,8 @@ async def send_stream_as_messages(
                         changed = True
                 if changed:
                     tail = ts
+        if not await _gate_allow(send_gate):
+            return full
         await _send_chunks(channel, tail, MAX_LEN, allowed_mentions=allowed_mentions)
 
     return full

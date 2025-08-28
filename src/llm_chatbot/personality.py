@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 
 @dataclass
@@ -59,6 +59,27 @@ class ListenConfig:
 
 
 @dataclass
+class RateLimitDim:
+    window: int
+    max: int
+
+
+@dataclass
+class RateLimitConfig:
+    channel: Optional[List[RateLimitDim]] = None
+    dm_user: Optional[List[RateLimitDim]] = None
+    trigger_user: Optional[List[RateLimitDim]] = None
+    global_: Optional[List[RateLimitDim]] = None
+
+
+@dataclass
+class BillingConfig:
+    paused: bool = False
+    hard_limit_daily_usd: Optional[float] = None
+    hard_limit_monthly_usd: Optional[float] = None
+
+
+@dataclass
 class Personality:
     """Persona that guides behavior, prompts, environment, and streaming."""
 
@@ -85,9 +106,23 @@ class Personality:
     listen: ListenConfig = field(default_factory=ListenConfig)
     triggers: TriggerConfig = field(default_factory=TriggerConfig)
     context: ContextConfig = field(default_factory=ContextConfig)
+    rate_limit: RateLimitConfig = field(default_factory=RateLimitConfig)
+    billing: BillingConfig = field(default_factory=BillingConfig)
     # Optional: include online members list
     env_include_online_members: bool = False
     env_online_limit: int = 50
+
+
+def _rl_list(obj) -> Optional[List[RateLimitDim]]:
+    if not obj:
+        return None
+    out: List[RateLimitDim] = []
+    for item in obj:
+        try:
+            out.append(RateLimitDim(window=int(item.get("window", 0)), max=int(item.get("max", 0))))
+        except Exception:
+            continue
+    return out or None
 
 
 DEFAULT_PERSONALITY = Personality(
@@ -109,6 +144,8 @@ def load_personality(path: str | Path) -> Personality:
     data = yaml.safe_load(p.read_text())
     streaming = data.get("streaming", {}) or {}
     environment = data.get("environment", {}) or {}
+    _rate = data.get("rate_limit", {}) or {}
+    _billing_cfg = data.get("billing", {}) or {}
     # listen config
     _listen = data.get("listen", {}) or {}
     listen = ListenConfig(
@@ -130,6 +167,17 @@ def load_personality(path: str | Path) -> Personality:
         cost_monthly_usd=(_listen.get("cost_monthly_usd")),
         moderation_enabled=bool(_listen.get("moderation_enabled", False)),
         moderation_model=_listen.get("moderation_model", "omni-moderation-latest"),
+    )
+    rate_limit = RateLimitConfig(
+        channel=_rl_list(_rate.get("channel")) or [RateLimitDim(window=10, max=3), RateLimitDim(window=60, max=10)],
+        dm_user=_rl_list(_rate.get("dm_user")) or [RateLimitDim(window=10, max=2), RateLimitDim(window=60, max=6)],
+        trigger_user=_rl_list(_rate.get("trigger_user")) or [RateLimitDim(window=30, max=3)],
+        global_=_rl_list(_rate.get("global")) or [RateLimitDim(window=60, max=20)],
+    )
+    billing_cfg = BillingConfig(
+        paused=bool(_billing_cfg.get("paused", False)),
+        hard_limit_daily_usd=_billing_cfg.get("hard_limit_daily_usd"),
+        hard_limit_monthly_usd=_billing_cfg.get("hard_limit_monthly_usd"),
     )
 
     _trig = data.get("triggers", {}) or {}
@@ -165,6 +213,8 @@ def load_personality(path: str | Path) -> Personality:
         listen=listen,
         triggers=triggers,
         context=context,
+        rate_limit=rate_limit,
+        billing=billing_cfg,
         env_include_online_members=bool(environment.get("include_online_members", False)),
         env_online_limit=int(environment.get("online_limit", 50)),
     )
