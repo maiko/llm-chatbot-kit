@@ -26,6 +26,7 @@ from .openai_client import (
     judge_intervention,
 )
 from .personality import Personality
+from .rate_limit import MultiKeySlidingWindow
 from .runtime_utils import (
     _build_env_context,
     _chunk_message,
@@ -181,6 +182,38 @@ def run(cfg: Config, personality: Personality, *, stream: bool = True) -> None:
             on_mention_enabled = True
         if is_dm or (is_mentioned and on_mention_enabled) or word_triggered:
             primary_trigger = True
+
+        bot_id_str = str(getattr(bot.user, "id", "")) if bot.user else ""
+        rl_caps: dict[str, list[tuple[int, int]]] = {}
+        try:
+            if getattr(personality, "rate_limit", None):
+                if personality.rate_limit.channel:
+                    rl_caps["channel"] = [(int(d.window), int(d.max)) for d in personality.rate_limit.channel]
+                if personality.rate_limit.dm_user:
+                    rl_caps["dm_user"] = [(int(d.window), int(d.max)) for d in personality.rate_limit.dm_user]
+                if personality.rate_limit.trigger_user:
+                    rl_caps["trigger_user"] = [(int(d.window), int(d.max)) for d in personality.rate_limit.trigger_user]
+                if personality.rate_limit.global_:
+                    rl_caps["global"] = [(int(d.window), int(d.max)) for d in personality.rate_limit.global_]
+        except Exception:
+            rl_caps = {}
+        limiter = MultiKeySlidingWindow(rl_caps, store.rate_windows_for(bot_id_str)) if bot_id_str else None
+
+        async def send_gate() -> bool:
+            if limiter is None:
+                return True
+            ok = True
+            try:
+                ok = limiter.allow("global", "all") and ok
+                ok = limiter.allow("channel", str(message.channel.id)) and ok
+                if is_dm:
+                    ok = limiter.allow("dm_user", str(getattr(message.author, "id", ""))) and ok
+                ok = limiter.allow("trigger_user", str(getattr(message.author, "id", ""))) and ok
+                if ok:
+                    store.save()
+            except Exception:
+                return False
+            return ok
 
         if not primary_trigger:
             # Consider spontaneous intervention in guild channels
@@ -346,6 +379,25 @@ def run(cfg: Config, personality: Personality, *, stream: bool = True) -> None:
                     filtered.append(m)
             history = filtered[-include_n:]
 
+        b_bot = store.billing_for(getattr(bot.user, "id", 0)) if bot.user else store.billing
+        try:
+            if getattr(personality, "billing", None) and bool(personality.billing.paused):
+                logger.info("generation blocked: persona billing paused")
+                return
+            if getattr(personality, "billing", None):
+                if personality.billing.hard_limit_daily_usd is not None and b_bot.daily_usd >= float(
+                    personality.billing.hard_limit_daily_usd
+                ):
+                    logger.info("generation blocked: persona hard daily limit reached")
+                    return
+                if personality.billing.hard_limit_monthly_usd is not None and b_bot.monthly_usd >= float(
+                    personality.billing.hard_limit_monthly_usd
+                ):
+                    logger.info("generation blocked: persona hard monthly limit reached")
+                    return
+        except Exception:
+            pass
+
         convo = _conversation(
             history,
             personality.system_prompt + (env_context or ""),
@@ -384,6 +436,7 @@ def run(cfg: Config, personality: Personality, *, stream: bool = True) -> None:
                     strip_leading=[f"<@{bot.user.id}>", f"<@!{bot.user.id}>"] if bot.user else None,
                     allowed_mentions=no_pings,
                     max_total_chars=(personality.listen.response_max_chars if intervened else None),
+                    send_gate=send_gate,
                 )
                 # Capture usage if available
                 if getattr(deltas, "usage", None):
@@ -410,6 +463,11 @@ def run(cfg: Config, personality: Personality, *, stream: bool = True) -> None:
                     final_text = final_text[: max(0, int(personality.listen.response_max_chars))]
                 no_pings = discord.AllowedMentions(everyone=False, users=True, roles=False, replied_user=False)
                 for chunk in _chunk_message(final_text):
+                    try:
+                        if limiter is not None and not await send_gate():
+                            break
+                    except Exception:
+                        break
                     await message.channel.send(chunk, allowed_mentions=no_pings)
             except Exception as e2:
                 logger.exception("generate: non-stream failed error=%s", e2)
@@ -437,17 +495,19 @@ def run(cfg: Config, personality: Personality, *, stream: bool = True) -> None:
             gs = store.guild_settings(message.guild.id)
             mark_intervened(gs, message.channel.id, int(getattr(message.author, "id", 0) or 0))
 
-        # Cost tracking (global) and alerts
+        # Cost tracking (per-bot) and alerts
         try:
-            rollover_if_needed(store.billing)
+            bcur = store.billing_for(getattr(bot.user, "id", 0)) if bot.user else store.billing
+            rollover_if_needed(bcur)
             used_model = gen_model if "gen_model" in locals() else cfg.openai_model
             cost = usd_cost(used_model, input_tokens, output_tokens, cached_tokens)
-            store.billing.daily_usd += cost
-            store.billing.monthly_usd += cost
+            bcur.daily_usd += cost
+            bcur.monthly_usd += cost
             tier = used_model
-            store.billing.by_model[tier] = store.billing.by_model.get(tier, 0.0) + cost
+            bcur.by_model[tier] = bcur.by_model.get(tier, 0.0) + cost
             feat = "listen" if intervened else "mention_or_dm"
-            store.billing.by_feature[feat] = store.billing.by_feature.get(feat, 0.0) + cost
+            bcur.by_feature[feat] = bcur.by_feature.get(feat, 0.0) + cost
+            store.save()
             logger.info(
                 "usage model=%s input=%d output=%d cached=%d cost=$%.4f feature=%s channel=%s guild=%s",
                 used_model,

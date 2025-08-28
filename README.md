@@ -146,9 +146,34 @@ Commands (per persona prefix)
 
 - Memory: `<prefix>context`, `<prefix>reset`, `<prefix>reboot` (owner)
 - Listening: `<prefix>listen on|off|status|ban|unban`
-- Costs: `<prefix>cost status|budget daily|budget monthly|hardstop on|off`
+- Costs: `<prefix>cost status|limit daily <amt>|limit monthly <amt>|pause on|off|hardstop on|off` (owner-only)
 - Emojis: `<prefix>emoji list`
 - Truncation: `<prefix>truncation status|set <auto|disabled>`
+
+Anti-spam rate limiting
+
+- Outbound send limits are enforced to prevent loops and spam. Dimensions:
+  - channel: per guild channel
+  - dm_user: per DM peer
+  - trigger_user: user who triggered in a public channel
+  - global: bot-wide
+- Configure in personality YAML with safe defaults:
+  ```yaml
+  rate_limit:
+    channel: [{ window: 10, max: 3 }, { window: 60, max: 10 }]
+    dm_user: [{ window: 10, max: 2 }, { window: 60, max: 6 }]
+    trigger_user: [{ window: 30, max: 3 }]
+    global: [{ window: 60, max: 20 }]
+  ```
+- The limiter gates actual sends, including streaming bursts; when exceeded, sending silently stops to break loops.
+
+Per-bot cost tracking
+
+- Costs are isolated per running bot (keyed by Discord bot user ID).
+- Owner-only cost controls:
+  - `~cost status`
+  - `~cost limit daily <amount>`, `~cost limit monthly <amount>`
+  - `~cost pause on|off` and `~cost hardstop on|off`
 
 Planned
 

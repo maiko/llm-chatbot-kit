@@ -28,6 +28,8 @@ class MemoryStore:
         self._data: Dict[str, ChannelContext] = {}
         self._guild_settings: Dict[str, dict] = {}
         self._billing: Billing = Billing()
+        self._billing_by_bot: Dict[str, Billing] = {}
+        self._rate_windows_by_bot: Dict[str, Dict[str, Dict[str, list]]] = {}
         self._load()
 
     def _load(self) -> None:
@@ -52,6 +54,24 @@ class MemoryStore:
                 last_daily_alert=float(b.get("last_daily_alert", 0.0)),
                 last_monthly_alert=float(b.get("last_monthly_alert", 0.0)),
             )
+        bb = raw.get("billing_by_bot", {}) if isinstance(raw, dict) else {}
+        if isinstance(bb, dict):
+            for bot_id, vb in bb.items():
+                self._billing_by_bot[bot_id] = Billing(
+                    daily_usd=vb.get("daily_usd", 0.0),
+                    daily_key=vb.get("daily_key", ""),
+                    monthly_usd=vb.get("monthly_usd", 0.0),
+                    monthly_key=vb.get("monthly_key", ""),
+                    by_model=vb.get("by_model", {}),
+                    by_feature=vb.get("by_feature", {}),
+                    budget_daily_usd=vb.get("budget_daily_usd"),
+                    budget_monthly_usd=vb.get("budget_monthly_usd"),
+                    thresholds=tuple(vb.get("thresholds", (0.5, 0.8, 1.0))),
+                    hard_stop=bool(vb.get("hard_stop", True)),
+                    last_daily_alert=float(vb.get("last_daily_alert", 0.0)),
+                    last_monthly_alert=float(vb.get("last_monthly_alert", 0.0)),
+                )
+        self._rate_windows_by_bot = raw.get("rate_windows_by_bot", {}) if isinstance(raw, dict) else {}
 
     def save(self) -> None:
         """Persist the current state to disk atomically."""
@@ -72,9 +92,53 @@ class MemoryStore:
                 "last_daily_alert": self._billing.last_daily_alert,
                 "last_monthly_alert": self._billing.last_monthly_alert,
             },
+            "billing_by_bot": {
+                k: {
+                    "daily_usd": v.daily_usd,
+                    "daily_key": v.daily_key,
+                    "monthly_usd": v.monthly_usd,
+                    "monthly_key": v.monthly_key,
+                    "by_model": v.by_model,
+                    "by_feature": v.by_feature,
+                    "budget_daily_usd": v.budget_daily_usd,
+                    "budget_monthly_usd": v.budget_monthly_usd,
+                    "thresholds": list(v.thresholds),
+                    "hard_stop": v.hard_stop,
+                    "last_daily_alert": v.last_daily_alert,
+                    "last_monthly_alert": v.last_monthly_alert,
+                }
+                for k, v in self._billing_by_bot.items()
+            },
+            "rate_windows_by_bot": self._rate_windows_by_bot,
         }
         self.path.parent.mkdir(parents=True, exist_ok=True)
         write_json(self.path, raw)
+
+    def billing_for(self, bot_id: str) -> Billing:
+        key = str(bot_id)
+        b = self._billing_by_bot.get(key)
+        if b is None:
+            base = self._billing
+            b = Billing(
+                daily_usd=base.daily_usd,
+                daily_key=base.daily_key,
+                monthly_usd=base.monthly_usd,
+                monthly_key=base.monthly_key,
+                by_model=dict(base.by_model),
+                by_feature=dict(base.by_feature),
+                budget_daily_usd=base.budget_daily_usd,
+                budget_monthly_usd=base.budget_monthly_usd,
+                thresholds=base.thresholds,
+                hard_stop=base.hard_stop,
+                last_daily_alert=base.last_daily_alert,
+                last_monthly_alert=base.last_monthly_alert,
+            )
+            self._billing_by_bot[key] = b
+        return b
+
+    def rate_windows_for(self, bot_id: str) -> Dict[str, Dict[str, list]]:
+        key = str(bot_id)
+        return self._rate_windows_by_bot.setdefault(key, {})
 
     def get(self, channel_id: int) -> ChannelContext:
         """Return the channel context, creating a new one if needed."""
