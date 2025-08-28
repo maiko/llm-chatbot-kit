@@ -1,6 +1,4 @@
-import pytest
-
-from llm_chatbot.personality import load_personality, TriggerConfig, ContextConfig, Personality
+from llm_chatbot.personality import ContextConfig, TriggerConfig, load_personality
 
 
 def test_load_personality_triggers_context_defaults(tmp_path):
