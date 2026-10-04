@@ -12,7 +12,7 @@ from discord import app_commands
 
 from .image_client import ImageClient, ImageError, validate_request
 from .image_config import ImageConfig
-from .image_jobs import ImageWorker, JobStore
+from .image_jobs import ACTIVE, ImageWorker, JobStore
 from .image_status import ImageStatus, render_status
 
 TEXT = {
@@ -270,6 +270,13 @@ class ImageCommands:
                 return
             await interaction.response.defer(ephemeral=True, thinking=True)
             job = self.own_job(interaction, job_id)
+            if job and job["state"] in (*ACTIVE, "unknown"):
+                await interaction.followup.send(
+                    render_status(job, self.store.queue_snapshot(job["id"])),
+                    ephemeral=True,
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+                return
             path = self.store.artifact(job["id"]) if job else None
             if not job or job["state"] not in {"sent", "delivery_failed", "delivery_unknown"} or not path.exists():
                 await interaction.followup.send(text(self.language, "result_missing"), ephemeral=True)

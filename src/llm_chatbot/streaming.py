@@ -171,8 +171,17 @@ async def _send_chunks(
     channel, text: str, max_len: int, *, allowed_mentions: Optional[discord.AllowedMentions] = None, send_gate=None
 ) -> None:
     """Send `text` in chunks up to `max_len`, retrying on rate limits."""
-    for i in range(0, len(text), max_len):
-        chunk = text[i : i + max_len]
+    while text:
+        end = min(len(text), max_len)
+        if len(text) > max_len:
+            # Prefer complete sentences/lines, then a word boundary. Only a
+            # single token longer than Discord's limit requires a hard split.
+            boundaries = [m.end() for pattern in (BOUNDARY_NEWLINES, BOUNDARY_PUNCT_WS) for m in pattern.finditer(text, 0, max_len)]
+            if not boundaries:
+                boundaries = [m.end() for m in re.finditer(r"\s+", text[:max_len])]
+            if boundaries:
+                end = max(boundaries)
+        chunk, text = text[:end], text[end:]
         if not chunk.strip():
             continue
         if not await _gate_allow(send_gate):
@@ -246,15 +255,11 @@ async def send_stream_as_messages(
     unsent = ""  # accumulates complete segments not yet sent
     full = ""  # full text to return
     last_send = 0.0
-    started_at = 0.0  # timestamp of first token
-    FIRST_FLUSH_SEC = 0.7
 
     async with channel.typing():
         async for d in delta_iter:
             buf += d
             full += d
-            if started_at == 0.0:
-                started_at = time.monotonic()
             # Find the last boundary (newline run, or punctuation+whitespace) and
             # move completed text (preserving original whitespace) to unsent.
             boundary_idx = -1
@@ -298,18 +303,12 @@ async def send_stream_as_messages(
             # Rate pacing except for very first send (ASAP once a boundary reached)
             rate_ok = (now - last_send) >= (1.0 / RATE_HZ)
             should_send = (should_send_lines and (rate_ok or last_send == 0.0)) or (should_send_chars and rate_ok)
-            # If first burst hasn’t met a line boundary yet, allow a small early flush of whatever we have
-            if (
-                not should_send
-                and last_send == 0.0
-                and started_at > 0.0
-                and (now - started_at) >= FIRST_FLUSH_SEC
-                and (len(unsent) + len(buf)) > 0
-            ):
-                unsent += buf
-                buf = ""
+            # The first completed sentence/line may be short. Never flush the
+            # incomplete token tail just to make the first message appear faster.
+            if last_send == 0.0 and unsent:
                 should_send = True
-            # Avoid mid-line forced flushes; only send at boundaries or early-first-flush
+            # Send only completed segments; the unfinished tail waits for more
+            # deltas or the final stream flush.
             if should_send:
                 if last_send == 0.0 and strip_leading and unsent:
                     # remove any leading self-mention tokens

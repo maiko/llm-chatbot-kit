@@ -22,6 +22,7 @@ context:
 ```
 - `include_last_n`: number of recent messages to include (hard-capped at 50).
 - `include_non_addressed_messages`: when false, user messages are included only if they targeted the bot (mention or word trigger). Assistant messages are always included.
+- Permitted human messages are recorded even when listening is off, the judge declines to answer, or the backend is busy. Recording does not trigger a reply or consume a conversation turn. Bot/webhook messages, prefix commands and messages outside configured access rules are excluded. Each channel retains up to 100 entries, and each reply uses its configured last-N input snapshot. This records events received while the bot runs; it does not fetch older Discord history. `reset` still clears the stored context.
 
 # Personalities
 

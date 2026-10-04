@@ -250,6 +250,18 @@ def build_bot(cfg: Config, personality: Personality, *, stream: bool = True) -> 
         if is_dm or (is_mentioned and on_mention_enabled) or word_triggered:
             primary_trigger = True
 
+        # Observing a permitted human message is independent of replying to it.
+        # Record before busy/listening/quota gates, without consuming a turn.
+        channel_id = message.channel.id
+        ctx = store.get(channel_id)
+        author_name = getattr(message.author, "display_name", str(message.author.id))
+        ctx.messages.append({"role": "user", "content": f"{author_name}: {content}", "addressed": bool(primary_trigger)})
+        ctx.messages[:] = ctx.messages[-100:]
+        store.save()
+        # A later event may arrive while a judge or inference is awaited. Keep
+        # this event's input snapshot ending at its own message.
+        turn_history = list(ctx.messages)
+
         if bot.text_backend and (bot.text_backend.lock.locked() or (cfg.serialize_backends and bot.images and bot.images.store.busy())):
             if primary_trigger:
                 busy = (
@@ -300,7 +312,7 @@ def build_bot(cfg: Config, personality: Personality, *, stream: bool = True) -> 
                 # Local listening uses the same configured model, never a provider escalation.
                 if personality.listen.judge_enabled and bot.text_backend:
                     judge_limit = max(1, min(50, personality.listen.judge_max_context_messages))
-                    judge_msgs = store.get(message.channel.id).messages[-judge_limit:] + [{"role": "user", "content": content}]
+                    judge_msgs = turn_history[:-1][-judge_limit:] + [{"role": "user", "content": content}]
                     accepted, j_intent, conf = await bot.text_backend.judge(judge_msgs, personality.listen.judge_threshold)
                     if not accepted:
                         return
@@ -323,9 +335,8 @@ def build_bot(cfg: Config, personality: Personality, *, stream: bool = True) -> 
                         judge_msgs = hist_msgs
                     except Exception:
                         # Fallback: use in-memory context (no timestamps)
-                        pre_ctx = store.get(message.channel.id)
-                        hist = pre_ctx.messages[-max(1, personality.listen.judge_max_context_messages) :]
-                        judge_msgs = hist + [{"role": "user", "content": f"{message.author.display_name}: {content}"}]
+                        hist = turn_history[:-1][-max(1, personality.listen.judge_max_context_messages) :]
+                        judge_msgs = hist + [turn_history[-1]]
                     accepted, j_intent, conf = await asyncio.to_thread(
                         judge_intervention,
                         cfg.openai_api_key,
@@ -373,16 +384,8 @@ def build_bot(cfg: Config, personality: Personality, *, stream: bool = True) -> 
                     return
                 intervened = True
 
-        channel_id = message.channel.id
-        ctx = store.get(channel_id)
-
         # Build optional environment context
         env_context = _build_env_context(message, personality, i18n)
-
-        user_msg = f"{message.author.display_name}: {content}"
-        addressed_now = bool(primary_trigger)
-        ctx.messages.append({"role": "user", "content": user_msg, "addressed": addressed_now})
-        ctx.messages[:] = ctx.messages[-100:]
 
         if not intervened and ctx.turns >= cfg.max_turns:
             await message.channel.send(i18n.t("limit_reached", max_turns=cfg.max_turns, prefix=effective_prefix))
@@ -438,10 +441,10 @@ def build_bot(cfg: Config, personality: Personality, *, stream: bool = True) -> 
             include_non_addr = True
 
         if include_non_addr:
-            history = ctx.messages[-include_n:]
+            history = turn_history[-include_n:]
         else:
             filtered = []
-            for m in ctx.messages:
+            for m in turn_history:
                 r = m.get("role")
                 if r == "assistant":
                     filtered.append(m)
