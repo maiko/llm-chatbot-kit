@@ -27,6 +27,7 @@ from .openai_client import (
 )
 from .personality import Personality
 from .rate_limit import MultiKeySlidingWindow
+from .reply_queue import ReplyQueue, ReplyQueueFull
 from .runtime_utils import (
     _build_env_context,
     _chunk_message,
@@ -78,7 +79,7 @@ def build_bot(cfg: Config, personality: Personality, *, stream: bool = True) -> 
         Persona configuration loaded from YAML.
     stream: bool
         Whether to use streaming responses by default (with a natural burst
-        sender). If streaming fails, gracefully falls back to non-streaming.
+        sender). Configured backend failures never trigger a second inference.
     """
     if cfg.image_tools_enabled and not (cfg.text_enabled and cfg.image_enabled and cfg.text_api_base_url):
         raise ValueError("IMAGE_TOOLS_ENABLED requires both mode and a Chat Completions backend")
@@ -104,6 +105,7 @@ def build_bot(cfg: Config, personality: Personality, *, stream: bool = True) -> 
         save_task = None
         images = None
         text_backend = None
+        replies = None
 
         async def setup_hook(self):
             if cfg.text_enabled:
@@ -119,6 +121,8 @@ def build_bot(cfg: Config, personality: Personality, *, stream: bool = True) -> 
 
         async def close(self):
             set_ready(False)
+            if self.replies:
+                await self.replies.close()
             if self.save_task:
                 self.save_task.cancel()
                 try:
@@ -240,7 +244,6 @@ def build_bot(cfg: Config, personality: Personality, *, stream: bool = True) -> 
         if content.startswith(effective_prefix):
             logger.debug("command-detected: prefix=%s", effective_prefix)
             return
-        intervened = False
 
         primary_trigger = False
         try:
@@ -255,22 +258,78 @@ def build_bot(cfg: Config, personality: Personality, *, stream: bool = True) -> 
         channel_id = message.channel.id
         ctx = store.get(channel_id)
         author_name = getattr(message.author, "display_name", str(message.author.id))
-        ctx.messages.append({"role": "user", "content": f"{author_name}: {content}", "addressed": bool(primary_trigger)})
+        ctx.messages.append(
+            {"role": "user", "content": f"{author_name}: {content}", "addressed": bool(primary_trigger), "message_id": str(message.id)}
+        )
         ctx.messages[:] = ctx.messages[-100:]
         store.save()
         # A later event may arrive while a judge or inference is awaited. Keep
         # this event's input snapshot ending at its own message.
         turn_history = list(ctx.messages)
 
-        if bot.text_backend and (bot.text_backend.lock.locked() or (cfg.serialize_backends and bot.images and bot.images.store.busy())):
-            if primary_trigger:
-                busy = (
-                    "Backend occupé ; réessaie dans un instant."
+        if primary_trigger:
+            try:
+                await bot.replies.submit(message, turn_history)
+            except ReplyQueueFull:
+                notice = (
+                    "La file de réponses est pleine ; réessaie plus tard."
                     if (personality.language or "en").startswith("fr")
-                    else "Backend busy; please retry shortly."
+                    else "The reply queue is full; please retry later."
                 )
-                await message.channel.send(busy, allowed_mentions=discord.AllowedMentions.none())
+                await message.channel.send(notice, allowed_mentions=discord.AllowedMentions.none())
             return
+        if bot.replies.busy or (bot.text_backend and bot.text_backend.lock.locked()):
+            return
+        await respond(message, False, turn_history)
+
+    async def text_access(message):
+        if not bot.text_backend:
+            return True
+        if not message.guild or message.guild.id not in cfg.text_guild_ids or message.channel.id not in cfg.text_channel_ids:
+            return False
+        member = message.author
+        if hasattr(message.guild, "get_member"):
+            member = message.guild.get_member(message.author.id)
+            if member is None:
+                try:
+                    member = await message.guild.fetch_member(message.author.id)
+                except discord.HTTPException:
+                    return False
+        if cfg.text_role_ids and not {role.id for role in getattr(member, "roles", [])} & cfg.text_role_ids:
+            return False
+        if hasattr(message.channel, "permissions_for"):
+            if not message.channel.permissions_for(member).view_channel:
+                return False
+            if getattr(message.guild, "me", None):
+                perms = message.channel.permissions_for(message.guild.me)
+                send = perms.send_messages_in_threads if isinstance(message.channel, discord.Thread) else perms.send_messages
+                if not perms.view_channel or not send:
+                    return False
+        return True
+
+    reply_lock = asyncio.Lock()
+
+    async def respond(message, primary_trigger, turn_history):
+        async with reply_lock:
+            await perform_response(message, primary_trigger, turn_history)
+
+    async def perform_response(message, primary_trigger, turn_history):
+        if not await text_access(message):
+            return
+        is_dm = message.guild is None
+        content = (message.content or "").strip()
+        intervened = False
+        channel_id = message.channel.id
+        ctx = store.get(channel_id)
+        # Earlier queued replies may have completed after this event arrived.
+        # Insert those answers after their own user event, never later inputs.
+        fresh = [m for m in ctx.messages if m.get("role") == "assistant" and m not in turn_history]
+        enriched = []
+        for item in turn_history:
+            enriched.append(item)
+            if item.get("message_id"):
+                enriched.extend(m for m in fresh if m.get("in_reply_to") == item["message_id"])
+        turn_history = enriched
 
         bot_id_str = str(getattr(bot.user, "id", "")) if bot.user else ""
         rl_caps: dict[str, list[tuple[int, int]]] = {}
@@ -478,16 +537,13 @@ def build_bot(cfg: Config, personality: Personality, *, stream: bool = True) -> 
             if is_dm:
                 keys["dm_user"] = str(message.author.id)
             delay = limiter.reserve(keys)
-            if delay:
-                if not intervened:
-                    wait_seconds = int(delay) + 1
-                    notice = (
-                        f"Trop de demandes ; réessaie dans {wait_seconds} s."
-                        if (personality.language or "en").startswith("fr")
-                        else f"Too many requests; retry in {wait_seconds} s."
-                    )
-                    await message.channel.send(notice, allowed_mentions=discord.AllowedMentions.none())
-                return
+            while delay:
+                if intervened:
+                    return
+                await asyncio.sleep(delay)
+                if not await text_access(message):
+                    return
+                delay = limiter.reserve(keys)
             store.save()
 
         convo = _conversation(
@@ -601,7 +657,9 @@ def build_bot(cfg: Config, personality: Personality, *, stream: bool = True) -> 
         ctx.turns += 1
         # Persist the sanitized final text in memory for context dumps
         final_text = _strip_leading_self_mention(final_text)
-        ctx.messages.append({"role": "assistant", "content": final_text})
+        answer = {"role": "assistant", "content": final_text, "in_reply_to": str(message.id)}
+        index = next((i + 1 for i, item in enumerate(ctx.messages) if item.get("message_id") == str(message.id)), len(ctx.messages))
+        ctx.messages.insert(index, answer)
         ctx.messages[:] = ctx.messages[-100:]
         # Mark intervention cooldown if applicable
         if intervened and message.guild:
@@ -639,6 +697,7 @@ def build_bot(cfg: Config, personality: Personality, *, stream: bool = True) -> 
         store.save()
 
     if cfg.text_enabled:
+        bot.replies = ReplyQueue(respond, lambda: bot.user, cfg.text_queue_limit)
         register_commands(bot, store, cfg, i18n, personality, effective_prefix)
     return bot
 

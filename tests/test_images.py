@@ -524,6 +524,7 @@ def test_local_message_runtime_does_not_call_cloud(monkeypatch, tmp_path):
             guild=guild,
             channel=channel,
             content="hello",
+            id=100,
             webhook_id=None,
             author=SimpleNamespace(id=10, display_name="member", bot=False, roles=[]),
         )
@@ -1253,13 +1254,12 @@ def test_runtime_stream_finishes_image_tool_with_one_event_quota(monkeypatch, tm
         assert not bot.text_backend.lock.locked()
         state = read_json(cfg.store_path)
         assert len(state["rate_windows_by_bot"]["555"]["trigger_user"]["10"]) == 1
-        events = bot.text_backend.events
-        bot.text_backend.events = AsyncMock(side_effect=AssertionError("quota denial must precede inference"))
         message.id = 101
         await bot.on_message(message)
-        bot.text_backend.events.assert_not_called()
-        assert "réessaie" in message.channel.send.await_args.args[0] or "retry" in message.channel.send.await_args.args[0]
-        bot.text_backend.events = events
+        assert any(delay >= 29 for delay in waits)
+        assert bot.images.store.get("101") is None  # Existing per-user image admission still applies.
+        assert "réessaie" not in message.channel.send.await_args.args[0]
+        assert len(read_json(cfg.store_path)["rate_windows_by_bot"]["555"]["trigger_user"]["10"]) == 1
         await bot.close()
 
     asyncio.run(scenario())

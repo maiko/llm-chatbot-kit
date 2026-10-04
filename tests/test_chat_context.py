@@ -33,9 +33,13 @@ def context_fixture(monkeypatch, tmp_path, include_non_addressed=True):
     guild = SimpleNamespace(id=1, name="fixture", members=[], emojis=[])
     channel = SimpleNamespace(id=2, name="fixture", guild=guild, send=AsyncMock())
 
+    serial = 100
+
     def message(content, addressed=False, user=11):
+        nonlocal serial
+        serial += 1
         return SimpleNamespace(
-            id=user,
+            id=serial,
             content=content,
             addressed=addressed,
             channel=channel,
@@ -133,6 +137,88 @@ def test_context_recording_keeps_access_boundaries_commands_and_bot_exclusions(m
             await bot.on_message(message(f"observed {index}"))
         assert len(store.get(2).messages) == 100 and store.get(2).turns == 0
         channel.send.assert_not_awaited()
+        await bot.close()
+
+    asyncio.run(scenario())
+
+
+def test_addressed_messages_queue_with_previous_answer_and_without_future_inputs(monkeypatch, tmp_path):
+    cfg, store, persona, channel, message = context_fixture(monkeypatch, tmp_path)
+
+    async def scenario():
+        bot = runtime.build_bot(cfg, persona, stream=False)
+        bot.process_commands = AsyncMock()
+        bot._connection.user = SimpleNamespace(id=555, mentioned_in=lambda m: m.addressed)
+        entered, release = asyncio.Event(), asyncio.Event()
+        inputs = []
+
+        async def complete(convo):
+            inputs.append([item["content"] for item in convo])
+            if len(inputs) == 1:
+                entered.set()
+                await release.wait()
+            return "answer " + str(len(inputs)), (1, 1, 0)
+
+        bot.text_backend.complete = complete
+        first, second = message("first", True), message("second", True, 12)
+        for msg in (first, second):
+            msg.add_reaction, msg.remove_reaction = AsyncMock(), AsyncMock()
+        one = asyncio.create_task(bot.on_message(first))
+        await entered.wait()
+        two = asyncio.create_task(bot.on_message(second))
+        await asyncio.sleep(0)
+        second.add_reaction.assert_awaited_once_with("📝")
+        await bot.on_message(message("future comment"))
+        assert not two.done() and len(inputs) == 1
+        release.set()
+        await asyncio.gather(one, two)
+        assert "Alice: first" in inputs[1] and "answer 1" in inputs[1]
+        assert inputs[1].index("answer 1") < inputs[1].index("Bob: second")
+        assert "Alice: future comment" not in inputs[1]
+        assert [item["content"] for item in store.get(2).messages] == [
+            "Alice: first",
+            "answer 1",
+            "Bob: second",
+            "answer 2",
+            "Alice: future comment",
+        ]
+        assert [call.args[0] for call in channel.send.await_args_list] == ["answer 1", "answer 2"]
+        for msg in (first, second):
+            msg.remove_reaction.assert_awaited_once()
+        await bot.close()
+
+    asyncio.run(scenario())
+
+
+def test_queued_reply_rechecks_role_before_inference(monkeypatch, tmp_path):
+    cfg, store, persona, channel, message = context_fixture(monkeypatch, tmp_path)
+    cfg.text_role_ids = frozenset({77})
+
+    async def scenario():
+        bot = runtime.build_bot(cfg, persona, stream=False)
+        bot.process_commands = AsyncMock()
+        bot._connection.user = SimpleNamespace(id=555, mentioned_in=lambda m: m.addressed)
+        entered, release = asyncio.Event(), asyncio.Event()
+        calls = []
+
+        async def complete(convo):
+            calls.append(convo)
+            entered.set()
+            await release.wait()
+            return "answer", (1, 1, 0)
+
+        bot.text_backend.complete = complete
+        first, second = message("first", True), message("second", True, 12)
+        for msg in (first, second):
+            msg.author.roles = [SimpleNamespace(id=77)]
+        one = asyncio.create_task(bot.on_message(first))
+        await entered.wait()
+        two = asyncio.create_task(bot.on_message(second))
+        await asyncio.sleep(0)
+        second.author.roles = []
+        release.set()
+        await asyncio.gather(one, two)
+        assert len(calls) == 1
         await bot.close()
 
     asyncio.run(scenario())

@@ -32,8 +32,8 @@ Increase `min_next` to reduce bursts for long or code-heavy replies.
 Persona rate limits admit one response per incoming event before generation,
 across all configured dimensions atomically. Once admitted, the whole reply is
 delivered, including length-limit splits and the final tail; streaming bursts do
-not consume additional quota. A refused addressed event receives a retry notice;
-passive interventions are skipped. Discord transport limits and streaming pacing
+not consume additional quota. Addressed events wait in the reply queue until
+quota capacity is available; passive interventions are skipped. Discord transport limits and streaming pacing
 still apply. Delivery failures are explicit and do not save unsent text as a
 completed reply. Early exits close the backend iterator
 and release its connection/lock, without executing an incomplete image tool.

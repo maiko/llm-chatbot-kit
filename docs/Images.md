@@ -50,9 +50,29 @@ Members and Presence intents; image-only requires none of those privileged inten
 Image generation and Chat Completions run independently by default, so chat stays
 available while an image is being generated. Each backend keeps its own single
 request lock. Set `SERIALIZE_BACKENDS=true` when both endpoints share constrained
-resources: the bot then shares one execution lock and pending images block new
-chat dispatch. External applications are outside these locks; use a backend
+resources: the bot then shares one execution lock and chat waits for an active
+image generation to release it. External applications are outside these locks; use a backend
 scheduler when shared resources require one.
+
+## Addressed reply queue
+
+Mentions, configured word triggers and supported DMs enter a bounded FIFO reply
+queue. The bot adds 📝 while the message is pending or being answered, then removes
+its own reaction after delivery. Grant Add Reactions and Read Message History in
+chat channels. Reaction failures are logged and do not discard a reply.
+`TEXT_QUEUE_LIMIT` defaults to 20 pending replies (1–100), plus one active reply;
+a full queue receives an explicit retry notice.
+
+Only one reply executes at a time. Addressed replies wait for persona quota windows
+instead of being rejected; spontaneous interventions are skipped when busy or
+rate limited. Access is checked again before execution and after quota waits.
+Each input snapshot ends at its own event, with preceding queued answers inserted
+beside their questions. Later messages cannot change an earlier queued request.
+
+This text queue lives in memory and is not replayed after a restart. Wait until
+pending replies and image jobs have finished before replacing the bot. Image queue
+persistence and recovery remain independent. `--no-stream` sends complete replies;
+streaming is an optional delivery mode with the same reply queue.
 
 ## Configurable image presets
 
