@@ -28,7 +28,7 @@ def image_tool(cfg) -> dict:
     }
 
 
-def tool_guidance(cfg) -> str:
+def tool_guidance(cfg, default_preset=None) -> str:
     limits = {
         name: {
             key: options.get(key, default)
@@ -44,7 +44,7 @@ def tool_guidance(cfg) -> str:
         "Call at most one tool, with one image. Never claim an image is generated or delivered before tool execution. "
         "When generating an image, call the tool directly without a text preamble; "
         "the application publishes the actual queue status and eventual image. "
-        f"Default preset: {cfg.default_preset}. Size limits per preset: {json.dumps(limits)}.\n"
+        f"Default preset: {default_preset or cfg.default_preset}. Size limits per preset: {json.dumps(limits)}.\n"
         + ("Deployment-specific visual guidance:\n" + cfg.prompt_guidance if cfg.prompt_guidance else "")
     )
 
@@ -59,7 +59,12 @@ def unique_object(pairs):
 
 
 async def complete_with_image_tool(client, feature, conversation, message):
-    augmented = conversation + [{"role": "system", "content": tool_guidance(feature.cfg)}]
+    augmented = conversation + [
+        {
+            "role": "system",
+            "content": tool_guidance(feature.cfg, feature.preferred_preset(message) if hasattr(feature, "preferred_preset") else None),
+        }
+    ]
     response, usage = await client.complete_message(augmented, [image_tool(feature.cfg)])
     receipt = await image_tool_receipt(feature, response, message)
     if receipt is None:
@@ -107,7 +112,12 @@ class ImageToolStream:
         await self.iterator.aclose()
 
     async def _run(self, client, feature, conversation, message):
-        augmented = conversation + [{"role": "system", "content": tool_guidance(feature.cfg)}]
+        augmented = conversation + [
+            {
+                "role": "system",
+                "content": tool_guidance(feature.cfg, feature.preferred_preset(message) if hasattr(feature, "preferred_preset") else None),
+            }
+        ]
         events = client.events(augmented, [image_tool(feature.cfg)])
         tool = None
         finish = None
