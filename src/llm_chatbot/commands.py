@@ -149,7 +149,7 @@ def register_commands(
         if not emjs:
             await ctx_cmd.send(i18n.t("emoji_none"))
             return
-        lines = [f":{e.name}: => {e.mention}" for e in emjs]
+        lines = [f":{e.name}: => {str(e)}" for e in emjs]
         joined = "\n".join(lines)
         for chunk in _chunk_message(joined, limit=1970):
             await ctx_cmd.send(f"```\n{chunk}\n```")

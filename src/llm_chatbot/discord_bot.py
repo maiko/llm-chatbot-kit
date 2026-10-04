@@ -189,6 +189,11 @@ def build_bot(cfg: Config, personality: Personality, *, stream: bool = True) -> 
     async def on_ready():
         set_ready(True)
         logger.info("Connected as %s", bot.user)
+        if cfg.text_enabled and personality.env_include_emojis:
+            for guild in bot.guilds:
+                logger.info(
+                    "custom_emoji_inventory guild=%s count=%s context_limit=%s", guild.id, len(guild.emojis), personality.env_emojis_limit
+                )
 
     @bot.event
     async def on_disconnect():
