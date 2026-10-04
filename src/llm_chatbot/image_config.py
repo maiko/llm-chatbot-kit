@@ -85,8 +85,10 @@ class ImageConfig:
             if type(options.get("supports_seed", False)) is not bool:
                 raise ValueError("supports_seed must be a boolean")
 
-        if self.edits_enabled and not any(options.get("supports_edits", False) for options in self.presets.values()):
-            raise ValueError("Image edits require an edit-capable preset")
+        if self.edits_enabled:
+            exposed = {self.default_preset, *self.mode_presets.values()}
+            if any(not self.presets[name].get("supports_edits", False) for name in exposed):
+                raise ValueError("Image edits require an edit-capable preset for the default and every mode")
 
     @classmethod
     def from_env(cls) -> ImageConfig:

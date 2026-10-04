@@ -5,9 +5,11 @@ from __future__ import annotations
 import asyncio
 import base64
 import io
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 from urllib.parse import urlsplit
+from weakref import WeakKeyDictionary
 
 import aiohttp
 from PIL import Image, ImageOps, UnidentifiedImageError
@@ -18,6 +20,22 @@ MAX_SOURCE_BYTES = 8 * 1024 * 1024
 MAX_SOURCE_PIXELS = 16 * 1024 * 1024
 MAX_NORMALIZED_BYTES = 4 * 1024 * 1024
 FORMATS = {"PNG", "JPEG", "WEBP"}
+_NORMALIZERS = ThreadPoolExecutor(max_workers=2, thread_name_prefix="source-image")
+_NORMALIZATION_SLOTS = WeakKeyDictionary()
+
+
+async def normalize_image_async(data: bytes, message_id: int = 0) -> SourceImage:
+    loop = asyncio.get_running_loop()
+    slots = _NORMALIZATION_SLOTS.setdefault(loop, asyncio.Semaphore(2))
+    await slots.acquire()
+    try:
+        future = loop.run_in_executor(_NORMALIZERS, normalize_image, data, message_id)
+    except BaseException:
+        slots.release()
+        raise
+    # Cancellation must not free capacity while Pillow is still working.
+    future.add_done_callback(lambda _: slots.release())
+    return await asyncio.shield(future)
 
 
 @dataclass(frozen=True)
@@ -102,7 +120,7 @@ async def read_attachment(attachment, message_id=0) -> SourceImage:
                         raise ImageError("source_image_too_large")
     except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
         raise ImageError("source_image_unavailable") from exc
-    return normalize_image(bytes(data), message_id)
+    return await normalize_image_async(bytes(data), message_id)
 
 
 async def resolve_source(message) -> SourceImage | None:
@@ -110,31 +128,40 @@ async def resolve_source(message) -> SourceImage | None:
     attachments = image_attachments(source)
     reference = getattr(message, "reference", None)
     if not attachments and reference and reference.message_id:
-        if reference.channel_id != message.channel.id or reference.guild_id != getattr(message.guild, "id", None):
-            raise ImageError("source_image_access_denied")
+        source = getattr(reference, "resolved", None)
+        resolved = source is not None and hasattr(source, "attachments")
+        # A known text reference must never become a photo permission error.
+        if resolved and not image_attachments(source):
+            return None
+        same_channel = reference.channel_id == message.channel.id and reference.guild_id == getattr(message.guild, "id", None)
         permissions = message.channel.permissions_for(message.author)
         bot_permissions = message.channel.permissions_for(message.guild.me)
-        if not all(
+        readable = all(
             (permissions.view_channel, permissions.read_message_history, bot_permissions.view_channel, bot_permissions.read_message_history)
-        ):
-            raise ImageError("source_image_access_denied")
-        source = getattr(reference, "resolved", None)
-        if not source or not hasattr(source, "attachments"):
+        )
+        if not resolved:
+            # Do not fetch inaccessible/cross-channel history just to find a photo.
+            if not same_channel or not readable:
+                return None
             try:
                 source = await message.channel.fetch_message(reference.message_id)
-            except Exception as exc:
-                raise ImageError("source_image_unavailable") from exc
+            except Exception:
+                return None
+        attachments = image_attachments(source)
+        if not attachments:
+            return None
         if (
-            source.id != reference.message_id
+            not same_channel
+            or not readable
+            or source.id != reference.message_id
             or source.channel.id != message.channel.id
             or getattr(source.guild, "id", None) != getattr(message.guild, "id", None)
         ):
             raise ImageError("source_image_access_denied")
-        attachments = image_attachments(source)
     if len(attachments) > 1:
         raise ImageError("source_image_ambiguous")
     result = await read_attachment(attachments[0], source.id) if attachments else None
-    if source is not message:
+    if result is not None and source is not message:
         permissions = message.channel.permissions_for(message.author)
         bot_permissions = message.channel.permissions_for(message.guild.me)
         if not all(

@@ -60,6 +60,12 @@ Mentions, configured word triggers and supported DMs enter a bounded FIFO reply
 queue. The bot adds 📝 while the message is pending or being answered, then removes
 its own reaction after delivery. Grant Add Reactions and Read Message History in
 chat channels. Reaction failures are logged and do not discard a reply.
+Configured text output budgets are `TEXT_MAX_TOKENS=1024` and
+`TEXT_TOOL_MAX_TOKENS=4096`; `TEXT_TIMEOUT_SECONDS=300` allows slower tool-capable
+backends to finish. They are bounded startup settings, independent of persona
+reply length. A backend `finish_reason=length` produces a readable output-limit
+error: incomplete tool calls are discarded and inference is never retried.
+
 `TEXT_QUEUE_LIMIT` defaults to 20 pending replies (1–100), plus one active reply;
 a full queue receives an explicit retry notice.
 
@@ -334,3 +340,10 @@ previous result again. Backend upload/output retention must be managed by the
 deployment separately. Qualify vision and edit quality with your actual models
 before enabling these options; accepting multipart or tool calls alone does not
 prove visual understanding or reliable preservation of identity.
+
+When editing is enabled, the default preset and both configured mode mappings
+must support edits; an unused edit-capable preset is insufficient. Known plain-text
+replies bypass photo access checks. Photo normalization runs in two bounded worker
+threads, and cancelled downloads do not release a normalization slot early. Startup
+and cleanup remove orphan snowflake-named source PNGs and temporary source files
+under the exclusive image-store lock. Retained sources still follow job retention.

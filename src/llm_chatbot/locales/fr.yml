@@ -24,3 +24,5 @@ emoji_none: "Aucun emoji personnalisé sur ce serveur."
 truncation_usage: "Utilisation: {prefix}truncation [status|set <auto|disabled>]"
 truncation_status: "Tronquage: {value} (par défaut: {default})"
 truncation_set: "Tronquage défini sur: {value}"
+
+text_response_truncated: "Le modèle a atteint sa limite de sortie avant de terminer sa réponse. Aucun appel d’outil incomplet n’a été exécuté. La demande n’est pas relancée automatiquement."

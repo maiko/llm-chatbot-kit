@@ -371,3 +371,143 @@ def test_slash_edit_attachment_admission_and_feature_opt_in(monkeypatch, tmp_pat
         await bot.close()
 
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    "cross_channel,readable,resolved",
+    [(False, False, True), (True, True, True), (True, False, False), (False, False, False), (False, True, False)],
+)
+def test_text_references_do_not_require_photo_permissions(cross_channel, readable, resolved):
+    async def scenario():
+        message = tool_message()
+        message.attachments = []
+        permissions = message.channel.permissions_for(message.author)
+        permissions.read_message_history = readable
+        text = SimpleNamespace(id=99, channel=message.channel, guild=message.guild, attachments=[])
+        message.channel.fetch_message = AsyncMock(return_value=text)
+        message.reference = SimpleNamespace(
+            message_id=99,
+            channel_id=999 if cross_channel else message.channel.id,
+            guild_id=message.guild.id,
+            resolved=text if resolved else None,
+        )
+        assert await resolve_source(message) is None
+        if resolved or cross_channel or not readable:
+            message.channel.fetch_message.assert_not_awaited()
+
+    asyncio.run(scenario())
+
+
+def test_slash_only_edits_do_not_intercept_chat_photos(monkeypatch, tmp_path):
+    import json
+    from dataclasses import replace
+
+    import llm_chatbot.discord_media as media
+    from llm_chatbot.discord_bot import build_bot
+    from test_chat_context import context_fixture
+
+    cfg, _, persona, channel, message = context_fixture(monkeypatch, tmp_path)
+    image_env(monkeypatch, tmp_path)
+    monkeypatch.setenv("IMAGE_EDITS_ENABLED", "true")
+    monkeypatch.setenv("IMAGE_PRESETS_JSON", json.dumps({"default": {"model": "fixture", "supports_edits": True}}))
+    cfg = replace(cfg, image_enabled=True)
+    resolver = AsyncMock(side_effect=AssertionError("photos must not be resolved"))
+    monkeypatch.setattr(media, "resolve_source", resolver)
+
+    async def scenario():
+        bot = build_bot(cfg, persona, stream=False)
+        bot.process_commands = AsyncMock()
+        bot._connection.user = SimpleNamespace(id=555, mentioned_in=lambda m: m.addressed)
+        bot.text_backend.complete = AsyncMock(return_value=("normal reply", (1, 1, 0)))
+        m = message("hello", True)
+        m.attachments = [object(), object()]
+        await bot.on_message(m)
+        resolver.assert_not_awaited()
+        assert channel.send.await_args.args[0] == "normal reply"
+        await bot.close()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("unsupported", ["default", "preview"])
+def test_every_exposed_edit_preset_must_be_capable(tmp_path, unsupported):
+    presets = {
+        "default": {"model": "quality", "supports_seed": True, "supports_edits": True},
+        "preview": {"model": "fast", "supports_seed": True, "supports_edits": True},
+        "unused": {"model": "unused", "supports_edits": True},
+    }
+    presets[unsupported]["supports_edits"] = False
+    with pytest.raises(ValueError, match="every mode"):
+        config(tmp_path, presets=presets)
+
+
+def test_restart_removes_orphan_sources_without_touching_retained_sources(tmp_path):
+    cfg = config(tmp_path)
+    store = JobStore(cfg)
+    source = photo()
+    payload = validate_request("blue background", "preview", source.size, 1, cfg.presets)
+    store.admit(100, 10, 1, 2, payload, "fr", 10000, preset="preview", source=source.data)
+    store.update("100", "sent")
+    store.close()
+    for name in ("999.source.png", "998.source.tmp", "100.source.tmp", "keep.source.png", "997.png"):
+        (tmp_path / name).write_bytes(b"fixture")
+    store = JobStore(cfg)
+    assert store.source_artifact("100").read_bytes() == source.data
+    for name in ("999.source.png", "998.source.tmp", "100.source.tmp"):
+        assert not (tmp_path / name).exists()
+    assert (tmp_path / "keep.source.png").exists() and (tmp_path / "997.png").exists()
+    (tmp_path / "996.source.png").write_bytes(b"fixture")
+    store.cleanup()
+    assert not (tmp_path / "996.source.png").exists()
+    store.close()
+
+
+def test_normalization_is_off_loop_bounded_and_cancellation_keeps_slot(monkeypatch):
+    import threading
+
+    import llm_chatbot.discord_media as media
+
+    started = threading.Event()
+    release = threading.Event()
+    mutex = threading.Lock()
+    active = 0
+    peak = 0
+    loop_thread = threading.get_ident()
+    original = media.normalize_image
+    data = photo().data
+
+    def normalize(data, message_id):
+        nonlocal active, peak
+        assert threading.get_ident() != loop_thread
+        with mutex:
+            active += 1
+            peak = max(peak, active)
+            if active == 2:
+                started.set()
+        assert release.wait(5)
+        try:
+            return original(data, message_id)
+        finally:
+            with mutex:
+                active -= 1
+
+    monkeypatch.setattr(media, "normalize_image", normalize)
+
+    async def scenario():
+        tasks = [asyncio.create_task(media.normalize_image_async(data, n)) for n in range(4)]
+        try:
+            for _ in range(100):
+                if started.is_set():
+                    break
+                await asyncio.sleep(0.01)
+            assert started.is_set() and peak == 2
+            tasks[0].cancel()
+            await asyncio.sleep(0.03)
+            assert active == 2 and not tasks[2].done()
+        finally:
+            release.set()
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+        assert isinstance(results[0], asyncio.CancelledError)
+        assert all(isinstance(r, media.SourceImage) for r in results[1:]) and peak == 2
+
+    asyncio.run(scenario())
