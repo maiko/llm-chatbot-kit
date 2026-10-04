@@ -52,10 +52,28 @@ def _build_env_context(message: discord.Message, personality: Personality, i18n:
             try:
                 emjs = list(message.guild.emojis)[: max(0, personality.env_emojis_limit)]
                 if emjs:
-                    lines = "\n".join([f"- :{e.name}: => {e.mention}" for e in emjs])
-                    env_context += f"\nEmojis personnalisés disponibles (limité à {personality.env_emojis_limit}):\n{lines}"
-            except Exception:
-                pass
+                    lines = "\n".join([f"- :{e.name}: => {str(e)}" for e in emjs])
+                    count = len(message.guild.emojis)
+                    if (personality.language or "en").startswith("fr"):
+                        guidance = (
+                            f"Emotes personnalisées du serveur ({len(emjs)}/{count} codes fournis) :\n"
+                            "Pour utiliser une emote, copie son code Discord complet ci-dessous sans backticks. "
+                            "Un simple :nom: ne suffit pas. Ces métadonnées donnent les noms/codes, pas les images ; "
+                            "ne prétends pas connaître leur apparence et n'invente pas d'identifiants. "
+                            "La liste complète est accessible avec la commande emoji list du bot."
+                        )
+                    else:
+                        guidance = (
+                            f"Custom server emojis ({len(emjs)}/{count} codes provided):\n"
+                            "To use an emoji, copy its full Discord code below without backticks. "
+                            "A plain :name: is insufficient. These are names/codes, not image pixels; "
+                            "do not claim to know their appearance or invent IDs. "
+                            "The complete list is available with the bot's emoji list command."
+                        )
+                    env_context += "\n" + guidance + "\n" + lines
+            except Exception as exc:
+                logger.warning("custom_emoji_context_unavailable error=%s", type(exc).__name__)
+                env_context += "\nCustom emoji inventory unavailable; do not invent server emoji names or codes."
         if personality.env_include_online_members:
             try:
                 online = [m.display_name for m in members if getattr(m, "status", None) and m.status != discord.Status.offline]

@@ -78,3 +78,20 @@ Guidelines
 - Keep system prompts concise and specific; avoid revealing internal rules.
 - Respect Discord constraints: keep messages short; the bot auto-chunks when needed.
 - For code-heavy personas, increase `min_next` to avoid breaking blocks mid-stream.
+
+## Custom server emojis
+
+```yaml
+environment:
+  include_emojis: true
+  emojis_limit: 200
+```
+
+The optional inventory supplies exact static `<:name:id>` and animated
+`<a:name:id>` codes to each guild reply. Choose a limit covering the server's
+inventory if the full list is needed; the prompt reports included/total counts.
+The model receives names and codes, not the emoji image pixels or usage meanings.
+Instructions require full codes without backticks when rendering an emote and
+forbid invented IDs or visual descriptions. Use `<prefix>emoji list` without a
+mention for the complete deterministic code listing, independently of the prompt
+limit. Startup logs record inventory counts, not emoji names or conversation text.
