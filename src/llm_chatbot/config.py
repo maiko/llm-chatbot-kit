@@ -34,6 +34,17 @@ class Config:
     text_api_key: str | None = None
     text_queue_limit: int = 20
     text_vision_enabled: bool = False
+    text_max_tokens: int = 1024
+    text_tool_max_tokens: int = 4096
+    text_timeout_seconds: int = 300
+
+    def __post_init__(self):
+        for name in ("text_max_tokens", "text_tool_max_tokens"):
+            value = getattr(self, name)
+            if type(value) is not int or not 1 <= value <= 16384:
+                raise ValueError(f"{name.upper()} must be an integer from 1 to 16384")
+        if type(self.text_timeout_seconds) is not int or not 30 <= self.text_timeout_seconds <= 600:
+            raise ValueError("TEXT_TIMEOUT_SECONDS must be an integer from 30 to 600")
 
 
 def _maybe_migrate_cache(new_dir: Path, new_store: Path) -> None:
@@ -81,6 +92,9 @@ def load_config() -> Config:
         text_api_base_url=os.getenv("TEXT_API_BASE_URL") or None,
         text_api_key=os.getenv("TEXT_API_KEY") or None,
         text_queue_limit=int(os.getenv("TEXT_QUEUE_LIMIT", "20")),
+        text_max_tokens=int(os.getenv("TEXT_MAX_TOKENS", "1024")),
+        text_tool_max_tokens=int(os.getenv("TEXT_TOOL_MAX_TOKENS", "4096")),
+        text_timeout_seconds=int(os.getenv("TEXT_TIMEOUT_SECONDS", "300")),
         text_vision_enabled=os.getenv("TEXT_VISION_ENABLED", "false").lower() == "true",
         text_ca_file=os.getenv("TEXT_CA_FILE") or None,
         text_guild_ids=frozenset(int(v) for v in os.getenv("TEXT_GUILD_IDS", "").split(",") if v.strip()),

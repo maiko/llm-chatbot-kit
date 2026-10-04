@@ -148,7 +148,15 @@ def build_bot(cfg: Config, personality: Personality, *, stream: bool = True) -> 
             raise ValueError("TEXT_GUILD_IDS and TEXT_CHANNEL_IDS are required for the configured text backend")
         if not cfg.text_api_key or not cfg.text_api_key.strip():
             raise ValueError("TEXT_API_KEY is required for the configured text backend")
-        bot.text_backend = ChatCompletionsClient(cfg.text_api_base_url, cfg.text_api_key, cfg.openai_model, cfg.text_ca_file)
+        bot.text_backend = ChatCompletionsClient(
+            cfg.text_api_base_url,
+            cfg.text_api_key,
+            cfg.openai_model,
+            cfg.text_ca_file,
+            max_tokens=cfg.text_max_tokens,
+            tool_max_tokens=cfg.text_tool_max_tokens,
+            timeout_seconds=cfg.text_timeout_seconds,
+        )
     store = MemoryStore(cfg.store_path) if cfg.text_enabled else None
     if cfg.image_enabled:
         from .image_commands import ImageCommands
@@ -562,7 +570,11 @@ def build_bot(cfg: Config, personality: Personality, *, stream: bool = True) -> 
         )
 
         source = None
-        if primary_trigger and bot.text_backend and (cfg.text_vision_enabled or (bot.images and bot.images.cfg.edits_enabled)):
+        if (
+            primary_trigger
+            and bot.text_backend
+            and (cfg.text_vision_enabled or (cfg.image_tools_enabled and bot.images and bot.images.cfg.edits_enabled))
+        ):
             from .discord_media import resolve_source, with_image
             from .image_client import ImageError
             from .image_tools import tool_error
@@ -632,7 +644,10 @@ def build_bot(cfg: Config, personality: Personality, *, stream: bool = True) -> 
                 logger.warning("generate: streaming failed backend=%s error=%s", "local" if bot.text_backend else "cloud", type(e).__name__)
                 if bot.text_backend:
                     # No second generation after a configured backend streaming failure.
-                    await message.channel.send(i18n.t("generic_error"), allowed_mentions=discord.AllowedMentions.none())
+                    await message.channel.send(
+                        i18n.t("text_response_truncated" if str(e) == "text_backend_response_truncated" else "generic_error"),
+                        allowed_mentions=discord.AllowedMentions.none(),
+                    )
                     return
                 use_stream = False
 
@@ -666,8 +681,10 @@ def build_bot(cfg: Config, personality: Personality, *, stream: bool = True) -> 
                 for chunk in _chunk_message(final_text):
                     await message.channel.send(chunk, allowed_mentions=no_pings)
             except Exception as e2:
-                logger.exception("generate: non-stream failed error=%s", e2)
-                final_text = i18n.t("generic_error")
+                logger.warning(
+                    "generate: non-stream failed exception=%s truncated=%s", type(e2).__name__, str(e2) == "text_backend_response_truncated"
+                )
+                final_text = i18n.t("text_response_truncated" if str(e2) == "text_backend_response_truncated" else "generic_error")
                 no_pings = discord.AllowedMentions(everyone=False, users=True, roles=False, replied_user=False)
                 await message.channel.send(final_text, allowed_mentions=no_pings)
 

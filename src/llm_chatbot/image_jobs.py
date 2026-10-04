@@ -7,6 +7,7 @@ import fcntl
 import json
 import logging
 import os
+import re
 import sqlite3
 import time
 from pathlib import Path
@@ -54,8 +55,18 @@ class JobStore:
         self.db.commit()
         for row in self.db.execute("SELECT id FROM jobs WHERE state NOT IN ('queued','running','ready','delivering')").fetchall():
             self.clear_delivery_prompt(row["id"])
+        self.cleanup()
+
+    def reconcile_sources(self) -> None:
+        # Called only while holding the exclusive store lock, outside admission.
+        known = {row[0] for row in self.db.execute("SELECT id FROM jobs")}
+        for path in self.cfg.state_dir.iterdir():
+            match = re.fullmatch(r"([0-9]+)\.source\.(png|tmp)", path.name)
+            if match and (match[2] == "tmp" or match[1] not in known):
+                path.unlink(missing_ok=True)
 
     def cleanup(self) -> None:
+        self.reconcile_sources()
         cutoff = time.time() - self.cfg.retention_hours * 3600
         rows = self.db.execute(
             "SELECT id FROM jobs WHERE updated < ? AND state NOT IN ('queued','running','ready','delivering','unknown')", (cutoff,)
