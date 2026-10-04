@@ -48,6 +48,34 @@ def render_status(job: dict, snapshot: dict) -> str:
             lines.append(f"Position {position}/{snapshot['total']} · file : {snapshot['waiting']} en attente")
         else:
             lines.append(f"Position {position}/{snapshot['total']} · queue: {snapshot['waiting']} waiting")
+    progress = job.get("progress")
+    if job["state"] == "running" and progress:
+        phase = progress.get("phase")
+        labels = {
+            "fr": {
+                "preparing": "Préparation",
+                "sampling": "Échantillonnage",
+                "decoding": "Décodage",
+                "saving": "Finalisation",
+                "completed": "Image prête",
+            },
+            "en": {
+                "preparing": "Preparing",
+                "sampling": "Sampling",
+                "decoding": "Decoding",
+                "saving": "Finalizing",
+                "completed": "Image ready",
+            },
+        }
+        if phase in labels[language]:
+            label = labels[language][phase]
+            value, maximum = progress.get("value"), progress.get("max")
+            if phase == "sampling" and type(value) is int and type(maximum) is int and 0 <= value <= maximum and maximum > 0:
+                percent = value * 100 // maximum
+                filled = value * 10 // maximum
+                lines.append(f"{label} · [{'█' * filled}{'░' * (10 - filled)}] {percent}% · {value}/{maximum}")
+            else:
+                lines.append(label)
     if snapshot["paused"]:
         lines.append(
             "⏸ File suspendue · vérification par l’administrateur nécessaire."

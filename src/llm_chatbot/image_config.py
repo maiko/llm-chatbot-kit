@@ -32,6 +32,7 @@ class ImageConfig:
     default_preset: str = "default"
     include_prompt: bool = False
     prompt_guidance: str = ""
+    progress_enabled: bool = False
 
     def __post_init__(self):
         if not isinstance(self.prompt_guidance, str) or len(self.prompt_guidance) > 16000:
@@ -73,6 +74,7 @@ class ImageConfig:
             sync_commands=os.getenv("IMAGE_SYNC_COMMANDS", "false").lower() == "true",
             presets=json.loads(os.getenv("IMAGE_PRESETS_JSON", '{"default":{"model":"default"}}')),
             default_preset=os.getenv("IMAGE_DEFAULT_PRESET", "default"),
+            progress_enabled=os.getenv("IMAGE_PROGRESS_ENABLED", "false").lower() == "true",
             include_prompt=os.getenv("IMAGE_INCLUDE_PROMPT", "false").lower() == "true",
             prompt_guidance=(
                 Path(os.environ["IMAGE_PROMPT_GUIDANCE_FILE"]).read_text(encoding="utf-8")

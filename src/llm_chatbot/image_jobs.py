@@ -22,6 +22,7 @@ ACTIVE = ("queued", "running", "ready", "delivering")
 class JobStore:
     def __init__(self, cfg: ImageConfig):
         self.cfg = cfg
+        self.progress_by_job: dict[str, dict] = {}
         self.on_change: Callable[[], None] | None = None
         cfg.state_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         cfg.state_dir.chmod(0o700)
@@ -71,13 +72,15 @@ class JobStore:
 
     def get(self, job_id: str) -> dict | None:
         row = self.db.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
-        return dict(row) if row else None
+        if row is None:
+            return None
+        return dict(row, progress=self.progress_by_job.get(job_id))
 
     def latest(self, user_id: int, guild_id: int) -> dict | None:
         row = self.db.execute(
             "SELECT * FROM jobs WHERE user_id=? AND guild_id=? ORDER BY created DESC LIMIT 1", (str(user_id), str(guild_id))
         ).fetchone()
-        return dict(row) if row else None
+        return self.get(row["id"]) if row else None
 
     def admit(self, job_id: int, user_id: int, guild_id: int, channel_id: int, payload: dict, language: str, filesize_limit: int) -> dict:
         self.cleanup()
@@ -126,10 +129,18 @@ class JobStore:
                 "payload=CASE WHEN ? IN ('queued','running') THEN payload ELSE NULL END WHERE id=?",
                 (state, error, message_id, time.time(), state, job_id),
             )
+        if state != "running":
+            self.progress_by_job.pop(job_id, None)
         logger.info("image_job id=%s state=%s error=%s", job_id, state, error)
         if state not in ACTIVE:
             self.clear_delivery_prompt(job_id)
         self.notify()
+
+    def set_progress(self, job_id: str, progress: dict) -> None:
+        job = self.get(job_id)
+        if job and job["state"] == "running" and self.progress_by_job.get(job_id) != progress:
+            self.progress_by_job[job_id] = dict(progress)
+            self.notify()
 
     def clear_delivery_prompt(self, job_id: str) -> None:
         job = self.get(job_id)
@@ -218,7 +229,13 @@ class ImageWorker:
             try:
                 for attempt in range(3):
                     try:
-                        image = await self.client.generate(json.loads(job["payload"]))
+                        payload = json.loads(job["payload"])
+                        if self.store.cfg.progress_enabled:
+                            image = await self.client.generate(
+                                payload, on_progress=lambda progress: self.store.set_progress(job_id, progress)
+                            )
+                        else:
+                            image = await self.client.generate(payload)
                         break
                     except BackendBusy as exc:
                         if attempt == 2:
