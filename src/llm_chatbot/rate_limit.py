@@ -32,14 +32,14 @@ class MultiKeySlidingWindow:
 
     def allow(self, dim: str, key: str) -> bool:
         if dim not in self.caps:
-            ts = self._bucket_for(dim, key)
-            ts.append(self.now())
             return True
         now_ts = self.now()
         ts = self._bucket_for(dim, key)
-        for window, max_events in self.caps[dim]:
-            self._prune(ts, window, now_ts)
-            if len(ts) >= max_events:
+        windows = self.caps[dim]
+        if windows:
+            self._prune(ts, max(window for window, _ in windows), now_ts)
+        for window, max_events in windows:
+            if sum(stamp >= now_ts - window for stamp in ts) >= max_events:
                 return False
         ts.append(now_ts)
         return True

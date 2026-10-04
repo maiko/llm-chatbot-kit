@@ -35,6 +35,7 @@ nav:
   - Getting Started:
       - Installation: Installation.md
       - Configuration: Configuration.md
+      - Image and Text Backends: Images.md
       - Personalities: Personality.md
       - Streaming: Streaming.md
       - Listening (Experimental): Listening.md

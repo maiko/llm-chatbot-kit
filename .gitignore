@@ -43,3 +43,12 @@ personalities/*
 
 # Optional local runtime files
 context.json
+
+# Private image state and documentation build
+*.sqlite3
+*.sqlite3-journal
+worker.lock
+site/
+examples/image.env
+examples/data/
+examples/config/

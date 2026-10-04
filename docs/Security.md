@@ -1,5 +1,7 @@
 # Security
 
+Image-only and combined local operation: see [Local Images and Text](Images.md). Administrative commands require a configured `DISCORD_OWNER_ID`; unset denies access.
+
 Secrets
 - Never commit secrets. Use environment variables (`DISCORD_TOKEN`, `OPENAI_API_KEY`).
 - Rotate tokens if they leak. Revoke and reissue in Discord/OpenAI portals.

@@ -39,6 +39,7 @@ class DeltaStream:
 
     def __init__(self) -> None:
         self.q: asyncio.Queue[str | None] = asyncio.Queue()
+        self.error: Exception | None = None
         self.usage: tuple[int, int, int] | None = None  # (input, output, cached_input)
 
     def put(self, s: str) -> None:
@@ -59,6 +60,8 @@ class DeltaStream:
     async def __anext__(self) -> str:
         item = await self.q.get()
         if item is None:
+            if self.error:
+                raise self.error
             raise StopAsyncIteration
         return item
 
@@ -92,10 +95,12 @@ async def stream_deltas(
     """
     stream_obj = DeltaStream()
 
-    def producer() -> None:
+    loop = asyncio.get_running_loop()
+
+    def produce() -> None:
         from openai import OpenAI  # imported here to avoid import costs if unused
 
-        client = OpenAI(api_key=api_key)
+        client = OpenAI(api_key=api_key, timeout=120, max_retries=0)
         kwargs = {"model": model, "input": input_items}
         # Pass reasoning for GPT-5 models except chat-latest
         if reasoning is not None:
@@ -110,7 +115,7 @@ async def stream_deltas(
         with client.responses.stream(**kwargs) as stream:
             for event in stream:
                 if event.type == "response.output_text.delta":
-                    stream_obj.put(event.delta or "")
+                    loop.call_soon_threadsafe(stream_obj.put, event.delta or "")
             final = stream.get_final_response()
             try:
                 usage = getattr(final, "usage", None)
@@ -145,9 +150,16 @@ async def stream_deltas(
                     )
             except Exception:
                 stream_obj.set_usage((0, 0, 0))
-        stream_obj.close()
 
-    loop = asyncio.get_event_loop()
+    def producer() -> None:
+        try:
+            produce()
+        except Exception as exc:
+            stream_obj.error = RuntimeError("text_stream_failed")
+            logger.warning("Text stream failed: %s", type(exc).__name__)
+        finally:
+            loop.call_soon_threadsafe(stream_obj.close)
+
     # Run producer in background to enable true streaming (return immediately)
     fut = loop.run_in_executor(None, producer)
     # keep a reference on the stream object to avoid GC of the future

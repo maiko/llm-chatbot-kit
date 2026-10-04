@@ -1,0 +1,37 @@
+[Unit]
+Description=Local Discord text and image bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=discord-bot
+Group=discord-bot
+WorkingDirectory=/opt/llm-chatbot-kit
+EnvironmentFile=/etc/llm-chatbot-kit/bot.env
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=XDG_CACHE_HOME=/var/lib/llm-chatbot-kit
+Environment=IMAGE_STATE_DIR=/var/lib/llm-chatbot-kit/images
+ExecStart=/opt/llm-chatbot-kit/.venv/bin/llm-chatbot discord run --personality /etc/llm-chatbot-kit/bot.yml
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=30
+UMask=0077
+StateDirectory=llm-chatbot-kit
+StateDirectoryMode=0700
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+MemoryMax=768M
+CPUQuota=150%
+TasksMax=128
+
+[Install]
+WantedBy=multi-user.target

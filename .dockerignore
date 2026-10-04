@@ -13,3 +13,10 @@ build/
 site/
 docs/
 .DS_Store
+
+.env
+.env.*
+examples/
+*.env
+*.sqlite3
+*.png
