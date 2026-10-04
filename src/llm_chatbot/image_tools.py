@@ -42,6 +42,8 @@ def tool_guidance(cfg) -> str:
         "Ask a short clarification when essential visual details are missing. Otherwise preserve the user's "
         "subject and requested details, describing composition, lighting and style clearly. "
         "Call at most one tool, with one image. Never claim an image is generated or delivered before tool execution. "
+        "When generating an image, call the tool directly without a text preamble; "
+        "the application publishes the actual queue status and eventual image. "
         f"Default preset: {cfg.default_preset}. Size limits per preset: {json.dumps(limits)}.\n"
         + ("Deployment-specific visual guidance:\n" + cfg.prompt_guidance if cfg.prompt_guidance else "")
     )

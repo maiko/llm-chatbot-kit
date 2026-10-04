@@ -94,3 +94,49 @@ def test_admitted_response_ignores_fragment_count_without_losing_text(monkeypatc
         assert limiter.reserve({"user": "a"}) > 0
 
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("greeting", [False, True])
+def test_slow_first_tokens_never_split_words_or_sentences(monkeypatch, greeting):
+    import llm_chatbot.streaming as streaming
+
+    clock = [1.0]
+    monkeypatch.setattr(streaming, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+
+    async def sleep(delay):
+        clock[0] += delay
+
+    monkeypatch.setattr(asyncio, "sleep", sleep)
+
+    async def scenario():
+        channel = SimpleNamespace(typing=typing, send=AsyncMock())
+        parts = ["Salut la team ! M", "oi", " c'est l'assis", "tant. "] if greeting else ["Qu", "'est-ce qui", " se passe", " ? "]
+
+        async def deltas():
+            for part in parts:
+                clock[0] += 1
+                yield part
+
+        result = await send_stream_as_messages(channel, deltas(), rate_hz=100, min_first=60, min_next=1)
+        delivered = [call.args[0] for call in channel.send.await_args_list]
+        assert "".join(delivered) == result == "".join(parts)
+        assert delivered == (["Salut la team ! ", "Moi c'est l'assistant. "] if greeting else ["Qu'est-ce qui se passe ? "])
+
+    asyncio.run(scenario())
+
+
+def test_discord_length_splits_preserve_normal_words():
+    async def scenario():
+        text = "paragraph " * 500
+        channel = SimpleNamespace(typing=typing, send=AsyncMock())
+
+        async def deltas():
+            yield text
+
+        await send_stream_as_messages(channel, deltas())
+        chunks = [call.args[0] for call in channel.send.await_args_list]
+        assert "".join(chunks) == text
+        assert all(len(chunk) <= 1900 for chunk in chunks)
+        assert all(chunk.endswith(" ") for chunk in chunks[:-1])
+
+    asyncio.run(scenario())

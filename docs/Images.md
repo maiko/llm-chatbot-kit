@@ -130,6 +130,10 @@ fragments stay buffered. Admission waits for a complete stream with a valid fini
 reason and explicit `[DONE]`; truncated, oversized or disconnected tool streams
 never submit an image. There is no second completion after streaming failure.
 `--no-stream` selects the complete-response path instead.
+
+`/image-result` shows queue/progress status while a request is still active,
+and paused status for an uncertain generation. It only offers a retained image
+after generation finishes; an active job is not reported as a missing result.
 A model can rewrite an image request and call `generate_image` with `prompt`,
 optional `preset` and `size`. The kit validates these arguments before submitting
 the same queue used by `/imagine`.

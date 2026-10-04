@@ -23,8 +23,12 @@ streaming:
 ```
 
 `rate_hz` controls message pacing. `min_first` and `min_next` are character
-thresholds; complete-line boundaries and an early-first-flush timeout can also
-trigger a send. Increase `min_next` to reduce bursts for long or code-heavy replies.
+thresholds; completed sentences/lines can also trigger a send. The first completed
+sentence can be sent immediately even if short. Incomplete words or sentences are
+never flushed by a timer; the final tail is sent when the stream completes.
+Discord length-limit splits prefer sentence/line boundaries, then whitespace.
+Only a single token longer than that limit requires splitting inside a token.
+Increase `min_next` to reduce bursts for long or code-heavy replies.
 Persona rate limits admit one response per incoming event before generation,
 across all configured dimensions atomically. Once admitted, the whole reply is
 delivered, including length-limit splits and the final tail; streaming bursts do

@@ -1406,3 +1406,29 @@ def test_plain_stream_rejects_length_finish_even_with_done():
         await client.close()
 
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("state", ["queued", "running", "ready", "delivering", "unknown"])
+def test_result_reports_current_generation_instead_of_missing_image(monkeypatch, tmp_path, state):
+    image_env(monkeypatch, tmp_path)
+
+    async def scenario():
+        bot = build_bot(load_config(), DEFAULT_PERSONALITY)
+        bot.images.store.admit(100, 10, 1, 2, validate_request("lighthouse", "default", "1024x1024", None), "fr", 10000)
+        bot.images.store.update("100", state)
+        interaction = SimpleNamespace(
+            guild_id=1,
+            channel_id=2,
+            user=SimpleNamespace(id=10, bot=False, roles=[SimpleNamespace(id=3)]),
+            response=SimpleNamespace(defer=AsyncMock(), send_message=AsyncMock()),
+            followup=SimpleNamespace(send=AsyncMock()),
+        )
+        command = bot.tree.get_command("image-result", guild=discord.Object(id=1))
+        await command.callback(interaction, "100")
+        response = interaction.followup.send.await_args
+        assert "🎨 100" in response.args[0] and "Aucune image" not in response.args[0]
+        assert response.kwargs["ephemeral"] and "file" not in response.kwargs
+        assert bot.images.store.get("100")["state"] == state
+        await bot.close()
+
+    asyncio.run(scenario())
