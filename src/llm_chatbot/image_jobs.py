@@ -62,6 +62,7 @@ class JobStore:
         ).fetchall()
         for row in rows:
             self.artifact(row["id"]).unlink(missing_ok=True)
+            self.source_artifact(row["id"]).unlink(missing_ok=True)
         with self.db:
             self.db.execute(
                 "DELETE FROM jobs WHERE updated < ? AND state NOT IN ('queued','running','ready','delivering','unknown')", (cutoff,)
@@ -72,6 +73,9 @@ class JobStore:
         if not job_id.isdecimal():
             raise ValueError("Invalid job ID")
         return self.cfg.state_dir / (job_id + ".png")
+
+    def source_artifact(self, job_id: str) -> Path:
+        return self.artifact(job_id).with_suffix(".source.png")
 
     def get(self, job_id: str) -> dict | None:
         row = self.db.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
@@ -105,44 +109,63 @@ class JobStore:
         language: str,
         filesize_limit: int,
         preset: str | None = None,
+        source: bytes | None = None,
     ) -> dict:
         self.cleanup()
         existing = self.get(str(job_id))
         if existing:
             return existing
-        with self.db:
-            if self.db.execute(
-                "SELECT 1 FROM jobs WHERE user_id=? AND state IN ('queued','running','ready','delivering')", (str(user_id),)
-            ).fetchone():
-                raise ImageError("user_busy")
-            count = self.db.execute("SELECT count(*) FROM jobs WHERE state IN ('queued','running','ready','delivering')").fetchone()[0]
-            if count >= self.cfg.queue_limit:
-                raise ImageError("queue_full")
-            since = time.time() - 86400
-            used = self.db.execute("SELECT count(*) FROM jobs WHERE user_id=? AND created >= ?", (str(user_id), since)).fetchone()[0]
-            if self.cfg.daily_limit > 0 and used >= self.cfg.daily_limit:
-                raise ImageError("daily_limit")
-            now = time.time()
-            self.db.execute(
-                "INSERT INTO jobs (id,user_id,guild_id,channel_id,payload,state,created,updated,language,filesize_limit,options) "
-                "VALUES (?,?,?,?,?,'queued',?,?,?,?,?)",
-                (
-                    str(job_id),
-                    str(user_id),
-                    str(guild_id),
-                    str(channel_id),
-                    json.dumps(payload),
-                    now,
-                    now,
-                    language,
-                    filesize_limit,
-                    json.dumps(
-                        {key: payload[key] for key in ("model", "quality", "size", "seed") if key in payload}
-                        | ({"prompt": payload["prompt"]} if self.cfg.include_prompt or self.cfg.quality_rerun_enabled else {})
-                        | ({"preset": preset} if preset else {})
+        try:
+            with self.db:
+                if self.db.execute(
+                    "SELECT 1 FROM jobs WHERE user_id=? AND state IN ('queued','running','ready','delivering')", (str(user_id),)
+                ).fetchone():
+                    raise ImageError("user_busy")
+                count = self.db.execute("SELECT count(*) FROM jobs WHERE state IN ('queued','running','ready','delivering')").fetchone()[0]
+                if count >= self.cfg.queue_limit:
+                    raise ImageError("queue_full")
+                since = time.time() - 86400
+                used = self.db.execute("SELECT count(*) FROM jobs WHERE user_id=? AND created >= ?", (str(user_id), since)).fetchone()[0]
+                if self.cfg.daily_limit > 0 and used >= self.cfg.daily_limit:
+                    raise ImageError("daily_limit")
+                if source is not None:
+                    from .discord_media import MAX_NORMALIZED_BYTES
+
+                    if not isinstance(source, bytes) or not source.startswith(b"\x89PNG\r\n\x1a\n") or len(source) > MAX_NORMALIZED_BYTES:
+                        raise ImageError("invalid_source_image")
+                    path = self.source_artifact(str(job_id))
+                    temp = path.with_suffix(".tmp")
+                    with temp.open("wb") as output:
+                        temp.chmod(0o600)
+                        output.write(source)
+                    temp.replace(path)
+                now = time.time()
+                self.db.execute(
+                    "INSERT INTO jobs (id,user_id,guild_id,channel_id,payload,state,created,updated,language,filesize_limit,options) "
+                    "VALUES (?,?,?,?,?,'queued',?,?,?,?,?)",
+                    (
+                        str(job_id),
+                        str(user_id),
+                        str(guild_id),
+                        str(channel_id),
+                        json.dumps(payload),
+                        now,
+                        now,
+                        language,
+                        filesize_limit,
+                        json.dumps(
+                            {key: payload[key] for key in ("model", "quality", "size", "seed") if key in payload}
+                            | ({"prompt": payload["prompt"]} if self.cfg.include_prompt or self.cfg.quality_rerun_enabled else {})
+                            | ({"preset": preset} if preset else {})
+                            | ({"operation": "edit"} if source is not None else {})
+                        ),
                     ),
-                ),
-            )
+                )
+        except Exception:
+            if source is not None:
+                self.source_artifact(str(job_id)).unlink(missing_ok=True)
+                self.source_artifact(str(job_id)).with_suffix(".tmp").unlink(missing_ok=True)
+            raise
         self.notify()
         return self.get(str(job_id))
 
@@ -171,6 +194,8 @@ class JobStore:
         if job:
             options = json.loads(job["options"] or "{}")
             retain = self.cfg.quality_rerun_enabled and job["state"] in {"sent", "delivery_failed", "delivery_unknown"}
+            if job["state"] not in ACTIVE and not retain:
+                self.source_artifact(job_id).unlink(missing_ok=True)
             if "prompt" in options and not retain:
                 del options["prompt"]
                 with self.db:
@@ -255,12 +280,19 @@ class ImageWorker:
                 for attempt in range(3):
                     try:
                         payload = json.loads(job["payload"])
+                        options = json.loads(job["options"] or "{}")
+                        source_options = {}
+                        if options.get("operation") == "edit":
+                            source_path = self.store.source_artifact(job_id)
+                            if not source_path.exists():
+                                raise ImageError("source_image_unavailable")
+                            source_options["source"] = source_path.read_bytes()
                         if self.store.cfg.progress_enabled:
                             image = await self.client.generate(
-                                payload, on_progress=lambda progress: self.store.set_progress(job_id, progress)
+                                payload, on_progress=lambda progress: self.store.set_progress(job_id, progress), **source_options
                             )
                         else:
-                            image = await self.client.generate(payload)
+                            image = await self.client.generate(payload, **source_options)
                         break
                     except BackendBusy as exc:
                         if attempt == 2:

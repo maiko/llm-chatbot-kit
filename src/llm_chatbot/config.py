@@ -33,6 +33,7 @@ class Config:
     ready_file: Path | None = None
     text_api_key: str | None = None
     text_queue_limit: int = 20
+    text_vision_enabled: bool = False
 
 
 def _maybe_migrate_cache(new_dir: Path, new_store: Path) -> None:
@@ -80,6 +81,7 @@ def load_config() -> Config:
         text_api_base_url=os.getenv("TEXT_API_BASE_URL") or None,
         text_api_key=os.getenv("TEXT_API_KEY") or None,
         text_queue_limit=int(os.getenv("TEXT_QUEUE_LIMIT", "20")),
+        text_vision_enabled=os.getenv("TEXT_VISION_ENABLED", "false").lower() == "true",
         text_ca_file=os.getenv("TEXT_CA_FILE") or None,
         text_guild_ids=frozenset(int(v) for v in os.getenv("TEXT_GUILD_IDS", "").split(",") if v.strip()),
         text_channel_ids=frozenset(int(v) for v in os.getenv("TEXT_CHANNEL_IDS", "").split(",") if v.strip()),

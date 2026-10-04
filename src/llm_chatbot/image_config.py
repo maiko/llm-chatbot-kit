@@ -36,6 +36,7 @@ class ImageConfig:
     mode_presets: dict = field(default_factory=dict)
     default_mode: str = "quality"
     quality_rerun_enabled: bool = False
+    edits_enabled: bool = False
 
     def __post_init__(self):
         if not isinstance(self.mode_presets, dict):
@@ -58,7 +59,16 @@ class ImageConfig:
         for name, options in self.presets.items():
             if not isinstance(name, str) or not re.fullmatch(r"[a-z0-9_-]{1,32}", name) or not isinstance(options, dict):
                 raise ValueError("Invalid image preset")
-            if set(options) - {"model", "quality", "size_multiple", "min_size", "max_size", "max_pixels", "supports_seed"}:
+            if set(options) - {
+                "model",
+                "quality",
+                "size_multiple",
+                "min_size",
+                "max_size",
+                "max_pixels",
+                "supports_seed",
+                "supports_edits",
+            }:
                 raise ValueError("Unknown image preset option")
             if not isinstance(options.get("model"), str) or not 1 <= len(options["model"]) <= 128:
                 raise ValueError("Each image preset requires a model ID")
@@ -70,8 +80,13 @@ class ImageConfig:
                     raise ValueError("Image dimension limits must be positive integers")
             if options.get("min_size", 64) > options.get("max_size", 2048) or options.get("max_size", 2048) > 8192:
                 raise ValueError("Invalid image dimension limits")
+            if type(options.get("supports_edits", False)) is not bool:
+                raise ValueError("supports_edits must be a boolean")
             if type(options.get("supports_seed", False)) is not bool:
                 raise ValueError("supports_seed must be a boolean")
+
+        if self.edits_enabled and not any(options.get("supports_edits", False) for options in self.presets.values()):
+            raise ValueError("Image edits require an edit-capable preset")
 
     @classmethod
     def from_env(cls) -> ImageConfig:
@@ -93,6 +108,7 @@ class ImageConfig:
             mode_presets=json.loads(os.getenv("IMAGE_MODE_PRESETS_JSON", "{}")),
             default_mode=os.getenv("IMAGE_DEFAULT_MODE", "quality"),
             quality_rerun_enabled=os.getenv("IMAGE_QUALITY_RERUN_ENABLED", "false").lower() == "true",
+            edits_enabled=os.getenv("IMAGE_EDITS_ENABLED", "false").lower() == "true",
             progress_enabled=os.getenv("IMAGE_PROGRESS_ENABLED", "false").lower() == "true",
             include_prompt=os.getenv("IMAGE_INCLUDE_PROMPT", "false").lower() == "true",
             prompt_guidance=(
