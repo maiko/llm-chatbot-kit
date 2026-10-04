@@ -36,8 +36,8 @@
 - PRs: clear description, linked issues, steps to validate; include screenshots/logs if UI/behavior changes
 
 ## Security & Configuration Tips
-- Never commit secrets. Use env vars: `DISCORD_TOKEN`, `OPENAI_API_KEY`, `DISCORD_OWNER_ID` (optional)
-- Discord: enable `MESSAGE CONTENT INTENT` (required) and `PRESENCE INTENT` (for online members) in Developer Portal
+- Never commit secrets. Use env vars: `DISCORD_TOKEN`, `OPENAI_API_KEY`, `DISCORD_OWNER_ID` (required for admin commands; unset denies)
+- Discord: chat/both use Message Content, Members and Presence intents; image-only uses no privileged intents. See `docs/Images.md` for the configured backend and durable queue contract.
 - Context store: defaults to `~/.cache/llm-chatbot-kit/context.json` (auto-migrates legacy); rotate/clean as needed
 
 ## Agent‑Specific Instructions

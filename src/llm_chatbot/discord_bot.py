@@ -67,7 +67,7 @@ def _conversation(
     return convo
 
 
-def run(cfg: Config, personality: Personality, *, stream: bool = True) -> None:
+def build_bot(cfg: Config, personality: Personality, *, stream: bool = True) -> commands.Bot:
     """Start the Discord bot event loop.
 
     Parameters
@@ -80,14 +80,75 @@ def run(cfg: Config, personality: Personality, *, stream: bool = True) -> None:
         Whether to use streaming responses by default (with a natural burst
         sender). If streaming fails, gracefully falls back to non-streaming.
     """
+    if cfg.image_tools_enabled and not (cfg.text_enabled and cfg.image_enabled and cfg.text_api_base_url):
+        raise ValueError("IMAGE_TOOLS_ENABLED requires both mode and a Chat Completions backend")
+    if cfg.ready_file:
+        cfg.ready_file.parent.mkdir(parents=True, exist_ok=True)
+        cfg.ready_file.unlink(missing_ok=True)
+
+    def set_ready(ready: bool) -> None:
+        if cfg.ready_file:
+            if ready:
+                cfg.ready_file.touch(mode=0o600)
+            else:
+                cfg.ready_file.unlink(missing_ok=True)
+
     intents = discord.Intents.default()
-    intents.message_content = True
-    intents.members = True
-    intents.presences = True
+    intents.message_content = cfg.text_enabled
+    intents.members = cfg.text_enabled
+    intents.presences = cfg.text_enabled
 
     effective_prefix = personality.command_prefix or cfg.command_prefix
-    bot = commands.Bot(command_prefix=effective_prefix, intents=intents)
-    store = MemoryStore(cfg.store_path)
+
+    class KitBot(commands.Bot):
+        save_task = None
+        images = None
+        text_backend = None
+
+        async def setup_hook(self):
+            if cfg.text_enabled:
+
+                async def periodic_save():
+                    while True:
+                        await asyncio.sleep(300)
+                        store.save()
+
+                self.save_task = asyncio.create_task(periodic_save(), name="context-save")
+            if self.images:
+                await self.images.setup()
+
+        async def close(self):
+            set_ready(False)
+            if self.save_task:
+                self.save_task.cancel()
+                try:
+                    await self.save_task
+                except asyncio.CancelledError:
+                    pass
+                store.save()
+            if self.text_backend:
+                await self.text_backend.close()
+                self.text_backend = None
+            if self.images:
+                await self.images.close()
+                self.images = None
+            await super().close()
+
+    bot = KitBot(command_prefix=effective_prefix, intents=intents)
+    if cfg.text_enabled and cfg.text_api_base_url:
+        from .text_client import ChatCompletionsClient
+
+        if not cfg.text_guild_ids or not cfg.text_channel_ids:
+            raise ValueError("TEXT_GUILD_IDS and TEXT_CHANNEL_IDS are required for the configured text backend")
+        bot.text_backend = ChatCompletionsClient(cfg.text_api_base_url, cfg.openai_api_key, cfg.openai_model, cfg.text_ca_file)
+    store = MemoryStore(cfg.store_path) if cfg.text_enabled else None
+    if cfg.image_enabled:
+        from .image_commands import ImageCommands
+        from .image_config import ImageConfig
+
+        bot.images = ImageCommands(bot, ImageConfig.from_env(), personality.language, cfg.owner_id)
+        if bot.text_backend and cfg.serialize_backends:
+            bot.images.worker.execution_lock = bot.text_backend.lock
     i18n = load_i18n(personality.language, overrides=personality.messages)
 
     # Compute effective judge model locally (avoid mutating personality at runtime)
@@ -120,19 +181,31 @@ def run(cfg: Config, personality: Personality, *, stream: bool = True) -> None:
 
     @bot.event
     async def on_ready():
+        set_ready(True)
         logger.info("Connected as %s", bot.user)
 
-        async def periodic_save():
-            while True:
-                await asyncio.sleep(300)
-                store.save()
+    @bot.event
+    async def on_disconnect():
+        set_ready(False)
 
-        bot.loop.create_task(periodic_save())
+    @bot.event
+    async def on_resumed():
+        set_ready(True)
 
     @bot.event
     async def on_message(message: discord.Message):
-        if message.author == bot.user:
+        if not cfg.text_enabled or message.author.bot or message.webhook_id:
             return
+
+        if bot.text_backend:
+            roles = {role.id for role in getattr(message.author, "roles", [])}
+            if (
+                not message.guild
+                or message.guild.id not in cfg.text_guild_ids
+                or message.channel.id not in cfg.text_channel_ids
+                or (cfg.text_role_ids and not roles & cfg.text_role_ids)
+            ):
+                return
 
         is_dm = message.guild is None
         is_mentioned = bot.user and bot.user.mentioned_in(message)
@@ -157,21 +230,13 @@ def run(cfg: Config, personality: Personality, *, stream: bool = True) -> None:
         except Exception:
             word_triggered = False
 
-        logger.info(
-            "on_message: mode=%s mention=%s guild=%s channel=%s author=%s content=%r",
-            "DM" if is_dm else "GUILD",
-            bool(is_mentioned),
-            getattr(message.guild, "name", None),
-            getattr(message.channel, "name", None),
-            getattr(message.author, "display_name", None),
-            content[:120],
-        )
+        logger.info("message guild=%s channel=%s author=%s", getattr(message.guild, "id", None), message.channel.id, message.author.id)
 
         await bot.process_commands(message)
 
         # If this message targets our command prefix, don't treat it as chat input
         if content.startswith(effective_prefix):
-            logger.info("command-detected: prefix=%s content=%r", effective_prefix, content[:80])
+            logger.debug("command-detected: prefix=%s", effective_prefix)
             return
         intervened = False
 
@@ -182,6 +247,16 @@ def run(cfg: Config, personality: Personality, *, stream: bool = True) -> None:
             on_mention_enabled = True
         if is_dm or (is_mentioned and on_mention_enabled) or word_triggered:
             primary_trigger = True
+
+        if bot.text_backend and (bot.text_backend.lock.locked() or (cfg.serialize_backends and bot.images and bot.images.store.busy())):
+            if primary_trigger:
+                busy = (
+                    "Backend occupé ; réessaie dans un instant."
+                    if (personality.language or "en").startswith("fr")
+                    else "Backend busy; please retry shortly."
+                )
+                await message.channel.send(busy, allowed_mentions=discord.AllowedMentions.none())
+            return
 
         bot_id_str = str(getattr(bot.user, "id", "")) if bot.user else ""
         rl_caps: dict[str, list[tuple[int, int]]] = {}
@@ -236,8 +311,14 @@ def run(cfg: Config, personality: Personality, *, stream: bool = True) -> None:
                 if not ok:
                     logger.debug("listen-skip: heuristics not triggered")
                     return
-                # Optional LLM judge step
-                if personality.listen.judge_enabled:
+                # Local listening uses the same configured model, never a provider escalation.
+                if personality.listen.judge_enabled and bot.text_backend:
+                    judge_msgs = store.get(message.channel.id).messages[-10:] + [{"role": "user", "content": content}]
+                    accepted, j_intent, conf = await bot.text_backend.judge(judge_msgs, personality.listen.judge_threshold)
+                    if not accepted:
+                        return
+                    intent = j_intent
+                if personality.listen.judge_enabled and not bot.text_backend:
                     # Build context from actual channel history: last 10 messages with timestamps
                     judge_msgs: List[dict]
                     try:
@@ -258,7 +339,8 @@ def run(cfg: Config, personality: Personality, *, stream: bool = True) -> None:
                         pre_ctx = store.get(message.channel.id)
                         hist = pre_ctx.messages[-max(1, personality.listen.judge_max_context_messages) :]
                         judge_msgs = hist + [{"role": "user", "content": f"{message.author.display_name}: {content}"}]
-                    accepted, j_intent, conf = judge_intervention(
+                    accepted, j_intent, conf = await asyncio.to_thread(
+                        judge_intervention,
                         cfg.openai_api_key,
                         effective_judge_model(),
                         judge_msgs,
@@ -272,8 +354,8 @@ def run(cfg: Config, personality: Personality, *, stream: bool = True) -> None:
                         j_intent,
                     )
                     if not accepted and "nano" in effective_judge_model() and 0.4 <= conf < personality.listen.judge_threshold:
-                        accepted, j_intent, conf = judge_intervention(
-                            cfg.openai_api_key, "gpt-5-mini", judge_msgs, personality.listen.judge_threshold
+                        accepted, j_intent, conf = await asyncio.to_thread(
+                            judge_intervention, cfg.openai_api_key, "gpt-5-mini", judge_msgs, personality.listen.judge_threshold
                         )
                         logger.info(
                             "listen-judge-escalate: model=%s accepted=%s conf=%.2f intent=%s",
@@ -313,6 +395,7 @@ def run(cfg: Config, personality: Personality, *, stream: bool = True) -> None:
         user_msg = f"{message.author.display_name}: {content}"
         addressed_now = bool(primary_trigger)
         ctx.messages.append({"role": "user", "content": user_msg, "addressed": addressed_now})
+        ctx.messages[:] = ctx.messages[-100:]
 
         if not intervened and ctx.turns >= cfg.max_turns:
             await message.channel.send(i18n.t("limit_reached", max_turns=cfg.max_turns, prefix=effective_prefix))
@@ -411,18 +494,23 @@ def run(cfg: Config, personality: Personality, *, stream: bool = True) -> None:
 
         # Stream (default) or non-stream path
         input_tokens = output_tokens = cached_tokens = 0
-        use_stream = stream
+        use_image_tool = bool(cfg.image_tools_enabled and primary_trigger and not intervened)
+        use_stream = stream and not use_image_tool
         # Select model and parameters (allow override for interventions)
         gen_model, reasoning, verbosity = _effective_model_and_params(cfg.openai_model, intervened, personality, cfg.openai_verbosity)
         if use_stream:
             try:
-                deltas = await stream_deltas(
-                    cfg.openai_api_key,
-                    gen_model,
-                    input_items,
-                    reasoning=reasoning,
-                    verbosity=verbosity,
-                    truncation=effective_truncation,
+                deltas = (
+                    bot.text_backend.deltas(convo)
+                    if bot.text_backend
+                    else await stream_deltas(
+                        cfg.openai_api_key,
+                        gen_model,
+                        input_items,
+                        reasoning=reasoning,
+                        verbosity=verbosity,
+                        truncation=effective_truncation,
+                    )
                 )
                 logger.info("generate: streaming model=%s", gen_model)
                 # Allow user mentions (to interact with others), block roles/everyone; strip only self-mention token
@@ -442,20 +530,34 @@ def run(cfg: Config, personality: Personality, *, stream: bool = True) -> None:
                 if getattr(deltas, "usage", None):
                     input_tokens, output_tokens, cached_tokens = deltas.usage  # type: ignore
             except Exception as e:
-                logger.exception("generate: streaming failed; falling back. error=%s", e)
+                logger.warning("generate: streaming failed backend=%s error=%s", "local" if bot.text_backend else "cloud", type(e).__name__)
+                if bot.text_backend:
+                    # No second generation after a configured backend streaming failure.
+                    await message.channel.send(i18n.t("generic_error"), allowed_mentions=discord.AllowedMentions.none())
+                    return
                 use_stream = False
 
         if not use_stream:
             try:
                 logger.info("generate: non-stream model=%s", gen_model)
-                final_text, usage = chat_complete_with_usage(
-                    api_key=cfg.openai_api_key,
-                    model=gen_model,
-                    messages=convo,
-                    reasoning=reasoning,
-                    verbosity=verbosity,
-                    truncation=effective_truncation,
-                )
+                if use_image_tool:
+                    from .image_tools import complete_with_image_tool
+
+                    final_text, usage = await complete_with_image_tool(bot.text_backend, bot.images, convo, message)
+                else:
+                    final_text, usage = (
+                        await bot.text_backend.complete(convo)
+                        if bot.text_backend
+                        else await asyncio.to_thread(
+                            chat_complete_with_usage,
+                            api_key=cfg.openai_api_key,
+                            model=gen_model,
+                            messages=convo,
+                            reasoning=reasoning,
+                            verbosity=verbosity,
+                            truncation=effective_truncation,
+                        )
+                    )
                 input_tokens, output_tokens, cached_tokens = usage
                 # Sanitize leading self-mention; allow user mentions (block roles/everyone)
                 final_text = _strip_leading_self_mention(final_text)
@@ -476,10 +578,10 @@ def run(cfg: Config, personality: Personality, *, stream: bool = True) -> None:
                 await message.channel.send(final_text, allowed_mentions=no_pings)
 
         # Optional moderation (persona listen setting)
-        if intervened and personality.listen.moderation_enabled:
+        if intervened and personality.listen.moderation_enabled and not bot.text_backend:
             from .openai_client import moderate_text
 
-            allowed = moderate_text(cfg.openai_api_key, personality.listen.moderation_model, final_text)
+            allowed = await asyncio.to_thread(moderate_text, cfg.openai_api_key, personality.listen.moderation_model, final_text)
             if not allowed:
                 # Skip sending content (already sent if streaming; in that case, this should be disabled or pre-moderated)
                 # For simplicity, do nothing extra here.
@@ -490,6 +592,7 @@ def run(cfg: Config, personality: Personality, *, stream: bool = True) -> None:
         # Persist the sanitized final text in memory for context dumps
         final_text = _strip_leading_self_mention(final_text)
         ctx.messages.append({"role": "assistant", "content": final_text})
+        ctx.messages[:] = ctx.messages[-100:]
         # Mark intervention cooldown if applicable
         if intervened and message.guild:
             gs = store.guild_settings(message.guild.id)
@@ -500,7 +603,7 @@ def run(cfg: Config, personality: Personality, *, stream: bool = True) -> None:
             bcur = store.billing_for(getattr(bot.user, "id", 0)) if bot.user else store.billing
             rollover_if_needed(bcur)
             used_model = gen_model if "gen_model" in locals() else cfg.openai_model
-            cost = usd_cost(used_model, input_tokens, output_tokens, cached_tokens)
+            cost = 0.0 if bot.text_backend else usd_cost(used_model, input_tokens, output_tokens, cached_tokens)
             bcur.daily_usd += cost
             bcur.monthly_usd += cost
             tier = used_model
@@ -525,5 +628,15 @@ def run(cfg: Config, personality: Personality, *, stream: bool = True) -> None:
 
         store.save()
 
-    register_commands(bot, store, cfg, i18n, personality, effective_prefix)
+    if cfg.text_enabled:
+        register_commands(bot, store, cfg, i18n, personality, effective_prefix)
+    return bot
+
+
+def run(cfg: Config, personality: Personality, *, stream: bool = True) -> None:
+    if not cfg.discord_token:
+        raise ValueError("DISCORD_TOKEN is required")
+    if cfg.text_enabled and not cfg.openai_api_key:
+        raise ValueError("TEXT_API_KEY (local) or OPENAI_API_KEY (cloud) is required in chat/both mode")
+    bot = build_bot(cfg, personality, stream=stream)
     bot.run(cfg.discord_token)

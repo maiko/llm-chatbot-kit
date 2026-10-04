@@ -10,7 +10,8 @@ readme = "README.md"
 requires-python = ">=3.9"
 authors = [{ name = "Maiko BOSSUYT", email = "hello@maiko-bossuyt.eu" }]
 dependencies = [
-  "discord.py>=2.3",
+  "discord.py>=2.7.1,<3",
+  "httpx>=0.28.1,<0.29",
   "openai>=1.40.0",
   "PyYAML>=6.0",
   "coloredlogs>=15.0",

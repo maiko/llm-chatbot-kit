@@ -1,5 +1,7 @@
 # Architecture
 
+Image-only and combined local operation: see [Local Images and Text](Images.md). Administrative commands require a configured `DISCORD_OWNER_ID`; unset denies access.
+
 This page is a quick tour for developers who want to dive in and extend the bot.
 
 ## High-Level Flow

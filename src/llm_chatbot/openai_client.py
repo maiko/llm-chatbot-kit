@@ -231,7 +231,7 @@ def chat_complete_with_usage(
     try:
         from openai import OpenAI
 
-        client = OpenAI(api_key=api_key)
+        client = OpenAI(api_key=api_key, timeout=120, max_retries=0)
         input_items = _messages_to_responses_payload(messages)
         rkw: Dict[str, Any] = {"model": model, "input": input_items}
         if _supports_gpt5_reasoning_and_verbosity(model):
@@ -258,7 +258,7 @@ def chat_complete_with_usage(
     try:
         from openai import OpenAI
 
-        client = OpenAI(api_key=api_key)
+        client = OpenAI(api_key=api_key, timeout=120, max_retries=0)
         ck = {"model": model, "messages": messages}
         _t1 = time.perf_counter()
         resp = client.chat.completions.create(**ck)
@@ -325,7 +325,7 @@ def judge_intervention(api_key: str, model: str, context_messages: List[Dict[str
     try:
         from openai import OpenAI
 
-        client = OpenAI(api_key=api_key)
+        client = OpenAI(api_key=api_key, timeout=120, max_retries=0)
         instruction = (
             "You are a strict classifier for a Discord bot. Decide if the bot should proactively intervene. "
             'Return ONLY compact JSON: {"intervene": true|false, "intent": "help|joke|snark", "confidence": 0..1}.'
@@ -406,7 +406,7 @@ def moderate_text(api_key: str, model: str, text: str) -> bool:
     try:
         from openai import OpenAI
 
-        client = OpenAI(api_key=api_key)
+        client = OpenAI(api_key=api_key, timeout=120, max_retries=0)
         started = _now()
         resp = client.moderations.create(model=model, input=text)
         try:

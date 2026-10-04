@@ -1,5 +1,7 @@
 # Commands
 
+Image-only and combined local operation: see [Local Images and Text](Images.md). Administrative commands require a configured `DISCORD_OWNER_ID`; unset denies access.
+
 Prefix: configurable via `COMMAND_PREFIX` (default `~`).
 
 Available commands

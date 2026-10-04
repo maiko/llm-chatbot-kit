@@ -3,13 +3,11 @@ from llm_chatbot.personality import ContextConfig, TriggerConfig, load_personali
 
 def test_load_personality_triggers_context_defaults(tmp_path):
     yml = tmp_path / "p.yml"
-    yml.write_text(
-        """
+    yml.write_text("""
 name: test
 system_prompt: "sys"
 developer_prompt: "dev"
-"""
-    )
+""")
     p = load_personality(str(yml))
     assert isinstance(p.triggers, TriggerConfig)
     assert p.triggers.enabled is False
@@ -23,8 +21,7 @@ developer_prompt: "dev"
 
 def test_load_personality_triggers_context_custom(tmp_path):
     yml = tmp_path / "p.yml"
-    yml.write_text(
-        """
+    yml.write_text("""
 name: test
 system_prompt: "sys"
 developer_prompt: "dev"
@@ -36,8 +33,7 @@ triggers:
 context:
   include_last_n: 12
   include_non_addressed_messages: false
-"""
-    )
+""")
     p = load_personality(str(yml))
     assert p.triggers.enabled is True
     assert p.triggers.on_mention is False

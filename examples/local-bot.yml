@@ -1,0 +1,20 @@
+name: Local bot
+language: fr
+system_prompt: |
+  Tu es un compagnon de discussion francophone, direct et naturel.
+  Réponds au message reçu sans inventer d'actions ou de recherches effectuées.
+developer_prompt: |
+  Utilise un ton convivial. Reste concis sauf quand une explication est demandée.
+command_prefix: "~"
+environment:
+  include_emojis: false
+  include_online_members: false
+listen:
+  enabled: false
+  judge_enabled: false
+  moderation_enabled: false
+triggers:
+  on_mention: true
+context:
+  include_last_n: 10
+  include_non_addressed_messages: false

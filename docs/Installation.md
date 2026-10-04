@@ -1,5 +1,7 @@
 # Installation
 
+Image-only and combined local operation: see [Local Images and Text](Images.md). Administrative commands require a configured `DISCORD_OWNER_ID`; unset denies access.
+
 Prerequisites
 - Python 3.9+ (recommended 3.11+)
 - A Discord application with a bot token and Message Content Intent enabled

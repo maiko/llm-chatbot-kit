@@ -1,0 +1,24 @@
+name: llm-chatbot-kit
+services:
+  bot:
+    build:
+      context: ..
+    restart: unless-stopped
+    env_file: image.env
+    init: true
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    cpus: 1.0
+    mem_limit: 512m
+    pids_limit: 128
+    volumes:
+      - ./data:/data
+      - ./config:/config:ro
+    command: [llm-chatbot, discord, run, --personality, /config/bot.yml]
+    logging:
+      driver: json-file
+      options:
+        max-size: 5m
+        max-file: "3"

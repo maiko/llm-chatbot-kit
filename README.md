@@ -4,7 +4,7 @@
 
 <p align="center">
   <b>Developer‑first kit for LLM chatbots</b><br/>
-  Streaming • Memory • Personas (Discord‑first)
+  Local Images • Local LLMs • Streaming • Memory • Personas (Discord‑first)
 </p>
 
 # LLM Chatbot Kit
@@ -12,6 +12,14 @@
 ![Build Docs](https://github.com/maiko/llm-chatbot-kit/actions/workflows/docs.yml/badge.svg?branch=main)
 ![Build Package](https://github.com/maiko/llm-chatbot-kit/actions/workflows/package.yml/badge.svg?branch=main)
 ![Python](https://img.shields.io/badge/Python-3.9%2B-blue)
+
+Image generation and configurable text backends
+
+- Use `/imagine` with a configured image backend, persistent queue, status, pending cancellation and cached results.
+- `BOT_MODE=image` runs without OpenAI credentials or privileged Discord intents; `BOT_MODE=both` adds persona chat.
+- `TEXT_API_BASE_URL`, `TEXT_API_KEY` and `TEXT_MODEL` select a Chat Completions backend without automatic provider fallback.
+- Guild/channel allowlists, optional role restrictions, per-user quotas and optional text/image serialization.
+- Setup, failure recovery and Compose/systemd examples: [Image and Text Backends](docs/Images.md).
 
 Install (pipx recommended)
 
@@ -31,7 +39,7 @@ Configuration (env)
 - `OPENAI_API_KEY`: OpenAI key
 - `OPENAI_MODEL` (optional): defaults to `gpt-5-mini`.
 - `OPENAI_VERBOSITY` (optional): `low` (default), `medium`, or `high` (GPT‑5 only; not for `gpt-5-chat-latest`).
-- `DISCORD_OWNER_ID` (optional): User ID for `reboot`
+- `DISCORD_OWNER_ID`: User ID for administrative commands; these are denied when unset
 - `COMMAND_PREFIX` (default `~`), `MAX_TURNS` (default `20`)
 - `CONTEXT_STORE_PATH` (optional): override default JSON context path.
 
@@ -138,7 +146,7 @@ Notes
 - Messages are stored in a JSON file under `~/.cache/llm-chatbot-kit/context.json` (or `CONTEXT_STORE_PATH`). On first run, the kit migrates an existing `~/.cache/discord-llm-bot/context.json` automatically.
 - Keep replies under Discord’s 2000-char limit; bot auto-chunks.
 - Streaming is default; on failure it falls back to non-streaming.
-- Enable intents in the Developer Portal: Message Content (required) and Presence (for online members).
+- Chat/both modes use Message Content, Members and Presence intents; image-only mode needs none of these.
 - Mentions: The bot allows user mentions but blocks roles/everyone. It adds a reminder to the developer prompt not to mention itself and strips leading self-mentions.
 - Environment context in guilds includes a “Membres visibles” list with member names and IDs for correct mentions, and an optional online members list by name only.
 

@@ -41,7 +41,7 @@ def register_commands(
 
     @bot.command(name="reboot")
     async def reboot_cmd(ctx_cmd: commands.Context):
-        if cfg.owner_id and str(ctx_cmd.author.id) != str(cfg.owner_id):
+        if not cfg.owner_id or str(ctx_cmd.author.id) != str(cfg.owner_id):
             await ctx_cmd.send(i18n.t("owner_only"))
             return
         store.reset_all()
@@ -54,6 +54,9 @@ def register_commands(
 
     @listen_group.command(name="on")
     async def listen_on(ctx_cmd: commands.Context):
+        if not cfg.owner_id or str(ctx_cmd.author.id) != str(cfg.owner_id):
+            await ctx_cmd.send(i18n.t("owner_only"))
+            return
         if not ctx_cmd.guild:
             await ctx_cmd.send(i18n.t("owner_only"))
             return
@@ -64,6 +67,9 @@ def register_commands(
 
     @listen_group.command(name="off")
     async def listen_off(ctx_cmd: commands.Context):
+        if not cfg.owner_id or str(ctx_cmd.author.id) != str(cfg.owner_id):
+            await ctx_cmd.send(i18n.t("owner_only"))
+            return
         if not ctx_cmd.guild:
             await ctx_cmd.send(i18n.t("owner_only"))
             return
@@ -92,6 +98,9 @@ def register_commands(
 
     @listen_group.command(name="ban")
     async def listen_ban(ctx_cmd: commands.Context, channel: discord.TextChannel):
+        if not cfg.owner_id or str(ctx_cmd.author.id) != str(cfg.owner_id):
+            await ctx_cmd.send(i18n.t("owner_only"))
+            return
         if not ctx_cmd.guild:
             await ctx_cmd.send(i18n.t("owner_only"))
             return
@@ -104,6 +113,9 @@ def register_commands(
 
     @listen_group.command(name="unban")
     async def listen_unban(ctx_cmd: commands.Context, channel: discord.TextChannel):
+        if not cfg.owner_id or str(ctx_cmd.author.id) != str(cfg.owner_id):
+            await ctx_cmd.send(i18n.t("owner_only"))
+            return
         if not ctx_cmd.guild:
             await ctx_cmd.send(i18n.t("owner_only"))
             return
@@ -162,7 +174,7 @@ def register_commands(
 
     @cost_group.command(name="limit")
     async def cost_limit(ctx_cmd: commands.Context, scope: str, amount: float):
-        if cfg.owner_id and str(ctx_cmd.author.id) != str(cfg.owner_id):
+        if not cfg.owner_id or str(ctx_cmd.author.id) != str(cfg.owner_id):
             await ctx_cmd.send(i18n.t("owner_only"))
             return
         bot_user = getattr(ctx_cmd.bot, "user", None)
@@ -180,7 +192,7 @@ def register_commands(
 
     @cost_group.command(name="hardstop")
     async def cost_hardstop(ctx_cmd: commands.Context, value: str):
-        if cfg.owner_id and str(ctx_cmd.author.id) != str(cfg.owner_id):
+        if not cfg.owner_id or str(ctx_cmd.author.id) != str(cfg.owner_id):
             await ctx_cmd.send(i18n.t("owner_only"))
             return
         v = value.lower() in ("on", "true", "1", "yes")
@@ -192,7 +204,7 @@ def register_commands(
 
     @cost_group.command(name="pause")
     async def cost_pause(ctx_cmd: commands.Context, value: str):
-        if cfg.owner_id and str(ctx_cmd.author.id) != str(cfg.owner_id):
+        if not cfg.owner_id or str(ctx_cmd.author.id) != str(cfg.owner_id):
             await ctx_cmd.send(i18n.t("owner_only"))
             return
         bot_user = getattr(ctx_cmd.bot, "user", None)
@@ -219,7 +231,7 @@ def register_commands(
 
     @truncation_group.command(name="set")
     async def truncation_set(ctx_cmd: commands.Context, value: str):
-        if cfg.owner_id and str(ctx_cmd.author.id) != str(cfg.owner_id):
+        if not cfg.owner_id or str(ctx_cmd.author.id) != str(cfg.owner_id):
             await ctx_cmd.send(i18n.t("owner_only"))
             return
         if not ctx_cmd.guild:
