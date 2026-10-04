@@ -131,6 +131,27 @@ waiting counts only queued jobs. These numbers exclude external backend clients.
 Status updates on queue changes, with a five-second polling fallback; unchanged
 content is not edited. English and French status strings are included.
 
+### Optional backend progress
+
+`IMAGE_PROGRESS_ENABLED=true` enables an explicit, nonstandard telemetry contract.
+The kit sends a fresh opaque `X-Image-Request-ID` header with each generation POST
+and polls `GET images/progress/{request_id}` on the same configured API every five
+seconds, using the same credential and verified TLS. The API returns JSON up to
+4096 bytes: `{"phase":"sampling","value":12,"max":25}`. Supported phases are
+`preparing`, `sampling`, `decoding`, `saving`, `completed`, and `unavailable`.
+Step counts must be integers with `0 <= value <= max <= 100000` and `max > 0`;
+counts can be null before the sampler starts. Other phases use null counts.
+No backend URL, prompt, preview or arbitrary phase text is shown.
+
+The existing status message shows a ten-segment bar, sampler step count and
+percentage, followed by preparation/decoding/finalization/upload states. Sampling
+100% means the sampling stage finished; it does not mean the image was delivered.
+Progress failures hide the bar and leave normal generation/delivery running;
+progress never retries a generation. Telemetry is transient and is discarded on
+restart or when the job leaves its running state. The final PNG uses the same
+message and cannot be overwritten by a late progress update. Leave the option off
+for standard image APIs without this extension.
+
 Queue capacity defaults to five outstanding jobs, one per user; quota defaults
 to ten admissions per rolling 24 hours. Failed and cancelled jobs consume an
 admission. Limits apply before generation. Cancellation and failure update the
