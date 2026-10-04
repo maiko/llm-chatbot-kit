@@ -3,9 +3,51 @@
 from __future__ import annotations
 
 import json
+import logging
 
 from .image_client import ImageError
-from .image_commands import text
+
+logger = logging.getLogger(__name__)
+
+# Only trusted codes are logged/rendered, never exception text or model arguments.
+TOOL_ERRORS = {
+    "invalid_tool_call": ("The model returned an invalid image tool call.", "Le modèle a renvoyé un appel d’outil image invalide."),
+    "invalid_tool_arguments": ("The model returned malformed image parameters.", "Le modèle a renvoyé des paramètres d’image mal formés."),
+    "invalid_prompt": ("The image prompt must contain 1–4000 characters.", "Le prompt doit contenir de 1 à 4 000 caractères."),
+    "invalid_preset": ("The model selected an unknown image preset.", "Le modèle a choisi un preset d’image inconnu."),
+    "invalid_size": (
+        "The requested dimensions do not meet the configured image limits.",
+        "Les dimensions demandées ne respectent pas les limites configurées.",
+    ),
+    "access_denied": ("Image access is not allowed here.", "La génération d’images n’est pas autorisée ici."),
+    "missing_channel_permissions": (
+        "The bot lacks channel permissions to send an image.",
+        "Le bot n’a pas les permissions nécessaires pour envoyer une image dans ce salon.",
+    ),
+    "requester_access_revoked": ("You no longer have access to this channel.", "Tu n’as plus accès à ce salon."),
+    "user_busy": (
+        "You already have an image queued or being delivered.",
+        "Tu as déjà une image en attente, en cours de génération ou d’envoi.",
+    ),
+    "queue_full": (
+        "The image queue is full; try again when a slot is available.",
+        "La file d’images est pleine ; réessaie lorsqu’une place se libère.",
+    ),
+    "daily_limit": (
+        "You reached the configured image quota for the last 24 hours.",
+        "Tu as atteint le quota d’images configuré pour les dernières 24 heures.",
+    ),
+    "image_tool_request_rejected": (
+        "A technical error prevented this image request from being accepted.",
+        "Une erreur technique a empêché l’acceptation de cette demande d’image.",
+    ),
+}
+
+
+def tool_error(language, code):
+    reason = TOOL_ERRORS[code][1 if language.startswith("fr") else 0]
+    prefix = "Génération non lancée" if language.startswith("fr") else "Generation not started"
+    return f"{prefix} : {reason}"
 
 
 def image_tool(cfg) -> dict:
@@ -91,8 +133,12 @@ async def image_tool_receipt(feature, response, message):
         await feature.from_message(message, json.loads(arguments, object_pairs_hook=unique_object))
         # Admission already publishes the one durable status message.
         return ""
-    except (ImageError, ValueError, TypeError, AttributeError):
-        return text(feature.language, "error", error="image_tool_request_rejected")
+    except (ImageError, ValueError, TypeError, AttributeError) as exc:
+        code = str(exc) if isinstance(exc, ImageError) else "invalid_tool_arguments"
+        if code not in TOOL_ERRORS:
+            code = "image_tool_request_rejected"
+        logger.warning("image_tool rejected code=%s exception=%s", code, type(exc).__name__)
+        return tool_error(feature.language, code)
 
 
 class ImageToolStream:

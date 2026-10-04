@@ -187,9 +187,11 @@ message and cannot be overwritten by a late progress update. Leave the option of
 for standard image APIs without this extension.
 
 Queue capacity defaults to five outstanding jobs, one per user; quota defaults
-to ten admissions per rolling 24 hours. Failed and cancelled jobs consume an
-admission. Limits apply before generation. Cancellation and failure update the
-public status too. The persisted channel message ID is independent of the
+to ten admissions per rolling 24 hours. Set `IMAGE_DAILY_LIMIT=0` to disable the
+daily quota while keeping queue capacity and one outstanding job per user.
+Positive values retain the rolling quota; negative values are invalid. Failed and
+cancelled jobs consume an admission when a quota is enabled. Limits apply before
+generation. Cancellation and failure update the public status too. The persisted channel message ID is independent of the
 interaction token's 15-minute expiry, so long jobs and restarts can still deliver.
 If the status cannot be published, `/image-status` remains available and the PNG
 uses a normal channel message. A confirmed deleted placeholder allows a fresh send.
@@ -217,6 +219,9 @@ The requester and destination come from the Discord message, never from the mode
 Image allowlists, roles, current channel permissions, quotas, size limits and one
 outstanding request per user apply. At most one call is accepted per message;
 unknown tools, extra arguments and multiple calls are rejected without admission.
+Conversational tool rejections report a readable validation/access/queue/quota
+reason. Logs contain only trusted error codes and exception types, never tool
+arguments or prompts. Rejections do not retry a generation.
 Discord message IDs make admission idempotent. A deterministic queue receipt is
 returned after submission; no second completion or recursive tool loop runs.
 The model decides whether the current user asked for an image, so enable the feature

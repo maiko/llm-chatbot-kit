@@ -120,7 +120,7 @@ class JobStore:
                 raise ImageError("queue_full")
             since = time.time() - 86400
             used = self.db.execute("SELECT count(*) FROM jobs WHERE user_id=? AND created >= ?", (str(user_id), since)).fetchone()[0]
-            if used >= self.cfg.daily_limit:
+            if self.cfg.daily_limit > 0 and used >= self.cfg.daily_limit:
                 raise ImageError("daily_limit")
             now = time.time()
             self.db.execute(
