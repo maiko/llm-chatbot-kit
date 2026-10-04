@@ -74,12 +74,12 @@ class ImageClient:
             limits=httpx.Limits(max_connections=2 if cfg.progress_enabled else 1),
         )
 
-    async def generate(self, payload: dict, *, on_progress=None) -> bytes:
+    async def generate(self, payload: dict, *, on_progress=None, source: bytes | None = None) -> bytes:
         request_id = secrets.token_hex(16) if self.progress_enabled and on_progress else None
         poll = asyncio.create_task(self._poll_progress(request_id, on_progress)) if request_id else None
         try:
             # A hard deadline also bounds a peer that keeps sending tiny chunks.
-            return await asyncio.wait_for(self._generate(payload, request_id), timeout=self.http.timeout.read + 15)
+            return await asyncio.wait_for(self._generate(payload, request_id, source), timeout=self.http.timeout.read + 15)
         except (httpx.TimeoutException, httpx.TransportError, asyncio.TimeoutError) as exc:
             # POST may have reached the backend. Do not regenerate this job.
             raise ImageError("outcome_unknown") from exc
@@ -119,9 +119,15 @@ class ImageClient:
             except Exception as exc:
                 logger.warning("image_progress callback_failed=%s", type(exc).__name__)
 
-    async def _generate(self, payload: dict, request_id=None) -> bytes:
+    async def _generate(self, payload: dict, request_id=None, source=None) -> bytes:
+        endpoint = "images/edits" if source is not None else "images/generations"
+        body = (
+            {"data": {key: str(value) for key, value in payload.items()}, "files": {"image": ("source.png", source, "image/png")}}
+            if source is not None
+            else {"json": payload}
+        )
         async with self.http.stream(
-            "POST", "images/generations", json=payload, headers={"X-Image-Request-ID": request_id} if request_id else None
+            "POST", endpoint, **body, headers={"X-Image-Request-ID": request_id} if request_id else None
         ) as response:
             if response.status_code == 429:
                 try:

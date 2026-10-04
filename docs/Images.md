@@ -294,3 +294,43 @@ model provisioning remain deployment responsibilities.
 Primary contracts: [discord.py interactions](https://discordpy.readthedocs.io/en/stable/interactions/api.html),
 [HTTPX async API](https://www.python-httpx.org/async/),
 [Python 3.12.15 release](https://www.python.org/downloads/release/python-31215/).
+
+## Photos: understanding and editing
+
+Photo features are disabled by default. For conversation, enable
+`TEXT_VISION_ENABLED=true` with a vision-capable Chat Completions backend.
+An addressed message can attach one PNG, JPEG or static WebP, or reply to a
+photo in the same readable channel. The model receives that photo only for this
+event; pixel data and signed attachment URLs are not stored in conversation
+history. Ordinary text and passive interventions keep their existing behavior.
+
+For retouching, enable `IMAGE_EDITS_ENABLED=true` and mark tested presets with
+`"supports_edits":true`. The configured image API must implement authenticated
+multipart `POST /images/edits`, returning the same inline PNG response as
+`/images/generations`. Fields are the validated prompt/model/size/options plus
+one `image` file. Output size follows the normalized source. The kit does not
+fetch model-supplied URLs or images embedded in arbitrary web links.
+
+`/image-edit image:<attachment> prompt:<instruction> [mode:fast|quality]`
+queues a retouch directly, without rewriting through the text model. With
+`IMAGE_TOOLS_ENABLED=true`, combined chat also offers `edit_image` when a source
+photo is present; attach a photo and address the bot with an instruction, or reply
+to a photo while addressing it. Re-register commands after enabling edits.
+The existing permissions, FIFO, status/progress, cancellation and delivery
+recovery apply to edits. Available modes must point to edit-capable presets.
+
+Sources are limited to 8 MiB, 16 megapixels and 8192 pixels per edge. The bot
+strips metadata, normalizes to PNG with at most 1024 pixels per edge (dimensions
+rounded to multiples of 32), and rejects animated or ambiguous multiple photos.
+It only fetches HTTPS Discord attachment CDN URLs, without redirects. Reply
+photos require both member and bot access to the same channel and its history.
+
+Source PNGs are private `0600` files in the existing `0700` image state directory.
+They are deleted on failed/cancelled/uncertain generation and after delivery
+unless quality reruns are enabled. In that case the original source is retained
+for the configured image retention period. A quality rerun uses that original
+source with the retained prompt, seed and dimensions, rather than editing the
+previous result again. Backend upload/output retention must be managed by the
+deployment separately. Qualify vision and edit quality with your actual models
+before enabling these options; accepting multipart or tool calls alone does not
+prove visual understanding or reliable preservation of identity.
