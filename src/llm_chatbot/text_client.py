@@ -43,8 +43,6 @@ class ChatCompletionsClient:
         }
 
     async def complete_message(self, messages: list[dict], tools: list[dict] | None = None) -> tuple[dict, tuple[int, int, int]]:
-        if self.lock.locked():
-            raise RuntimeError("text_backend_busy")
         async with self.lock:
             # No automatic fallback/retry: an ambiguous request must not produce another answer.
             payload = self.payload(messages)
@@ -76,8 +74,6 @@ class ChatCompletionsClient:
 
     async def events(self, messages: list[dict], tools: list[dict] | None = None):
         """Bounded SSE events; completion requires the backend's explicit DONE marker."""
-        if self.lock.locked():
-            raise RuntimeError("text_backend_busy")
         async with self.lock:
             payload = self.payload(messages, stream=True)
             if tools:
