@@ -749,7 +749,7 @@ def test_image_tool_uses_requester_and_durable_queue_without_followup(tmp_path):
         client = SimpleNamespace(complete_message=AsyncMock(return_value=(tool_response(), (4, 6, 0))))
         message = tool_message()
         receipt, usage = await complete_with_image_tool(client, feature, [{"role": "user", "content": "draw a lighthouse"}], message)
-        assert "En attente" in receipt and "Position 1/1" in receipt
+        assert receipt == ""
         job = feature.store.get("100")
         assert (job["user_id"], job["guild_id"], job["channel_id"], job["status_message_id"]) == ("10", "1", "2", "800")
         assert json.loads(job["payload"])["prompt"].startswith("A lighthouse")
@@ -885,6 +885,7 @@ def test_runtime_non_stream_conversational_image_tool_submits_without_cloud(monk
         bot.text_backend.complete_message.assert_awaited_once()
         bot.text_backend.deltas.assert_not_called()
         assert "Position 1/1" in message.channel.send.await_args.args[0]
+        message.channel.send.assert_awaited_once()
         await bot.close()
 
     asyncio.run(scenario())
@@ -1033,7 +1034,7 @@ def test_streamed_image_tool_buffers_fragments_until_complete_and_tracks_usage(t
         assert feature.store.get("100") is None
         assert client.lock.locked()
         tail = [chunk async for chunk in stream]
-        assert len(tail) == 1 and "Position 1/1" in tail[0]
+        assert tail == []
         assert "generate_image" not in "".join(tail)
         assert json.loads(feature.store.get("100")["payload"])["prompt"] == "A lighthouse at sunrise."
         assert stream.usage == (10, 20, 0)
@@ -1187,5 +1188,221 @@ def test_runtime_streaming_image_tool_has_no_non_stream_fallback(monkeypatch, tm
         assert len(calls) == 1 and not bot.text_backend.lock.locked()
         bot.text_backend.complete_message.assert_not_called()
         await bot.close()
+
+    asyncio.run(scenario())
+
+
+def test_runtime_stream_finishes_image_tool_with_one_event_quota(monkeypatch, tmp_path):
+    from contextlib import asynccontextmanager
+
+    import llm_chatbot.discord_bot as runtime
+    from llm_chatbot.personality import RateLimitDim, load_personality
+
+    image_env(monkeypatch, tmp_path)
+    for name, value in {
+        "BOT_MODE": "both",
+        "TEXT_API_BASE_URL": "https://backend.invalid/v1",
+        "TEXT_API_KEY": "fixture",
+        "TEXT_MODEL": "text-model",
+        "TEXT_GUILD_IDS": "1",
+        "TEXT_CHANNEL_IDS": "2",
+        "IMAGE_TOOLS_ENABLED": "true",
+    }.items():
+        monkeypatch.setenv(name, value)
+    clock = [0.0]
+    waits = []
+
+    async def sleep(delay):
+        waits.append(delay)
+        clock[0] += delay
+
+    monkeypatch.setattr(asyncio, "sleep", sleep)
+    monkeypatch.setattr(
+        runtime, "MultiKeySlidingWindow", lambda caps, buckets: MultiKeySlidingWindow(caps, buckets, now_func=lambda: clock[0])
+    )
+
+    @asynccontextmanager
+    async def typing():
+        yield
+
+    async def scenario():
+        persona = load_personality("examples/local-bot.yml")
+        persona.rate_limit.trigger_user = [RateLimitDim(window=30, max=1)]
+        persona.stream_min_first = persona.stream_min_next = 1
+        persona.stream_rate_hz = 1e9
+        cfg = load_config()
+        bot = build_bot(cfg, persona, stream=True)
+        bot.process_commands = AsyncMock()
+        bot._connection.user = SimpleNamespace(id=555, mentioned_in=lambda _: True)
+        prelude = ["Preparing the scene.\n", "Choosing the light.\n", "Ready to submit.\n"]
+        frames = [sse_event({"content": text}) for text in prelude] + tool_frames()[1:]
+        await bot.text_backend.http.aclose()
+        bot.text_backend.http = httpx.AsyncClient(
+            base_url="https://backend.invalid/v1/", transport=httpx.MockTransport(lambda _: httpx.Response(200, stream=FixtureSSE(frames)))
+        )
+        message = tool_message()
+        message.channel.typing = typing
+        message.content = "draw a lighthouse"
+        message.author.display_name = "member"
+        message.guild.name, message.guild.members, message.guild.emojis = "fixture", [], []
+        await bot.on_message(message)
+        assert bot.images.store.get("100")["state"] == "queued"
+        assert all(delay < 1 for delay in waits)
+        delivered = "".join(call.args[0] for call in message.channel.send.await_args_list)
+        assert "".join(prelude) in delivered
+        assert not bot.text_backend.lock.locked()
+        state = read_json(cfg.store_path)
+        assert len(state["rate_windows_by_bot"]["555"]["trigger_user"]["10"]) == 1
+        events = bot.text_backend.events
+        bot.text_backend.events = AsyncMock(side_effect=AssertionError("quota denial must precede inference"))
+        message.id = 101
+        await bot.on_message(message)
+        bot.text_backend.events.assert_not_called()
+        assert "réessaie" in message.channel.send.await_args.args[0] or "retry" in message.channel.send.await_args.args[0]
+        bot.text_backend.events = events
+        await bot.close()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("local_key", [None, "", " "])
+def test_configured_text_never_falls_back_to_cloud_credentials(monkeypatch, tmp_path, local_key):
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+    monkeypatch.setenv("BOT_MODE", "chat")
+    monkeypatch.setenv("OPENAI_API_KEY", "cloud-fixture")
+    monkeypatch.setenv("TEXT_API_BASE_URL", "https://backend.invalid/v1")
+    monkeypatch.setenv("TEXT_GUILD_IDS", "1")
+    monkeypatch.setenv("TEXT_CHANNEL_IDS", "2")
+    if local_key is None:
+        monkeypatch.delenv("TEXT_API_KEY", raising=False)
+    else:
+        monkeypatch.setenv("TEXT_API_KEY", local_key)
+    cfg = load_config()
+    assert cfg.openai_api_key == "cloud-fixture"
+    with pytest.raises(ValueError, match="TEXT_API_KEY"):
+        build_bot(cfg, DEFAULT_PERSONALITY)
+
+
+def test_cloud_and_configured_credentials_remain_separate(monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+    monkeypatch.setenv("BOT_MODE", "chat")
+    monkeypatch.setenv("OPENAI_API_KEY", "cloud-fixture")
+    monkeypatch.setenv("TEXT_API_KEY", "configured-fixture")
+    monkeypatch.delenv("TEXT_API_BASE_URL", raising=False)
+    assert load_config().openai_api_key == "cloud-fixture"
+    monkeypatch.setenv("TEXT_API_BASE_URL", "https://backend.invalid/v1")
+    monkeypatch.setenv("TEXT_GUILD_IDS", "1")
+    monkeypatch.setenv("TEXT_CHANNEL_IDS", "2")
+
+    async def scenario():
+        bot = build_bot(load_config(), DEFAULT_PERSONALITY)
+        assert bot.text_backend.http.headers["Authorization"] == "Bearer configured-fixture"
+        await bot.close()
+
+    asyncio.run(scenario())
+
+
+def test_run_accepts_configured_key_without_cloud_key(monkeypatch, tmp_path):
+    import llm_chatbot.discord_bot as runtime
+
+    cfg = Config("discord-fixture", "", "text-model", None, "42", "!", 20, tmp_path / "context.json")
+    cfg.text_api_base_url, cfg.text_api_key = "https://backend.invalid/v1", "configured-fixture"
+    bot = SimpleNamespace(run=lambda token: None)
+    monkeypatch.setattr(runtime, "build_bot", lambda *args, **kwargs: bot)
+    runtime.run(cfg, DEFAULT_PERSONALITY)
+    cfg.text_api_key = None
+    cfg.openai_api_key = "cloud-fixture"
+    with pytest.raises(ValueError, match="TEXT_API_KEY"):
+        runtime.run(cfg, DEFAULT_PERSONALITY)
+    cfg.text_api_base_url, cfg.openai_api_key, cfg.text_api_key = None, "", "configured-fixture"
+    with pytest.raises(ValueError, match="OPENAI_API_KEY"):
+        runtime.run(cfg, DEFAULT_PERSONALITY)
+
+
+@pytest.mark.parametrize(
+    "thread,send,thread_send,admitted",
+    [(False, False, True, False), (True, True, False, False), (False, True, False, True), (True, False, True, True)],
+)
+def test_slash_image_permission_matches_channel_type(monkeypatch, tmp_path, thread, send, thread_send, admitted):
+    image_env(monkeypatch, tmp_path)
+
+    async def scenario():
+        bot = build_bot(load_config(), DEFAULT_PERSONALITY)
+        if thread:
+            channel = object.__new__(discord.Thread)
+            channel.id = 2
+        else:
+            channel = SimpleNamespace(id=2)
+        bot.images.enqueue = AsyncMock(return_value={"id": "100"})
+        interaction = SimpleNamespace(
+            id=100,
+            guild_id=1,
+            channel_id=2,
+            channel=channel,
+            guild=SimpleNamespace(filesize_limit=10000),
+            user=SimpleNamespace(id=10, bot=False, roles=[SimpleNamespace(id=3)]),
+            filesize_limit=10000,
+            app_permissions=SimpleNamespace(attach_files=True, view_channel=True, send_messages=send, send_messages_in_threads=thread_send),
+            response=SimpleNamespace(defer=AsyncMock(), send_message=AsyncMock()),
+            followup=SimpleNamespace(send=AsyncMock()),
+        )
+        command = bot.tree.get_command("imagine", guild=discord.Object(id=1))
+        if admitted:
+            # Stop immediately after admission; no status readback is needed in this permission fixture.
+            bot.images.enqueue.side_effect = ImageError("fixture_admitted")
+        await command.callback(interaction, "lighthouse")
+        assert bot.images.enqueue.await_count == int(admitted)
+        if not admitted:
+            assert "missing_channel_permissions" in interaction.followup.send.await_args.args[0]
+        await bot.close()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    "owner,guild,channel,confirmed,expected",
+    [
+        (True, 1, 2, True, True),
+        (False, 1, 2, True, False),
+        (True, 9, 2, True, False),
+        (True, 1, 9, True, False),
+        (True, 1, 2, False, False),
+    ],
+)
+def test_owner_resolves_without_generator_role_inside_allowed_scope(monkeypatch, tmp_path, owner, guild, channel, confirmed, expected):
+    image_env(monkeypatch, tmp_path)
+    monkeypatch.setenv("DISCORD_OWNER_ID", "42")
+
+    async def scenario():
+        bot = build_bot(load_config(), DEFAULT_PERSONALITY)
+        bot.images.store.admit(100, 10, 1, 2, validate_request("lighthouse", "default", "1024x1024", None), "fr", 10000)
+        bot.images.store.update("100", "unknown")
+        interaction = SimpleNamespace(
+            guild_id=guild,
+            channel_id=channel,
+            user=SimpleNamespace(id=42 if owner else 10, bot=False, roles=[]),
+            response=SimpleNamespace(send_message=AsyncMock()),
+        )
+        command = bot.tree.get_command("image-resolve", guild=discord.Object(id=1))
+        await command.callback(interaction, "100", confirmed)
+        assert (bot.images.store.get("100")["state"] == "failed") is expected
+        await bot.close()
+
+    asyncio.run(scenario())
+
+
+def test_plain_stream_rejects_length_finish_even_with_done():
+    async def scenario():
+        frames = [sse_event({"content": "partial"}), sse_event(finish="length"), "data: [DONE]\n\n"]
+        client = ChatCompletionsClient(
+            "https://backend.invalid/v1",
+            "fixture",
+            "text-model",
+            transport=httpx.MockTransport(lambda _: httpx.Response(200, stream=FixtureSSE(frames))),
+        )
+        with pytest.raises(RuntimeError, match="truncated"):
+            [part async for part in client.deltas([])]
+        assert not client.lock.locked()
+        await client.close()
 
     asyncio.run(scenario())

@@ -167,12 +167,16 @@ async def stream_deltas(
     return stream_obj
 
 
-async def _send_chunks(channel, text: str, max_len: int, *, allowed_mentions: Optional[discord.AllowedMentions] = None) -> None:
+async def _send_chunks(
+    channel, text: str, max_len: int, *, allowed_mentions: Optional[discord.AllowedMentions] = None, send_gate=None
+) -> None:
     """Send `text` in chunks up to `max_len`, retrying on rate limits."""
     for i in range(0, len(text), max_len):
         chunk = text[i : i + max_len]
         if not chunk.strip():
             continue
+        if not await _gate_allow(send_gate):
+            raise RuntimeError("stream_delivery_denied")
         while True:
             try:
                 if allowed_mentions is not None:
@@ -220,6 +224,10 @@ async def send_stream_as_messages(
     - First burst ASAP after ≥1 completed line; subsequent bursts after ~2 lines
     - Respects sentence/newline boundaries and a light rate limit (~1.3 msg/s)
     - Obeys Discord's ~2000 char limit per message
+
+    The gate is checked for every physical Discord message, including the final
+    tail and capped replies. A denial raises rather than reporting unsent text
+    as successfully delivered. Runtime quotas are reserved once before generation.
 
     Returns the full concatenated text (not truncated), except when
     `max_total_chars` is set for an overall cap, in which case the returned
@@ -277,7 +285,7 @@ async def send_stream_as_messages(
                                 changed = True
                         if changed:
                             to_send = ts
-                await _send_chunks(channel, to_send, MAX_LEN, allowed_mentions=allowed_mentions)
+                await _send_chunks(channel, to_send, MAX_LEN, allowed_mentions=allowed_mentions, send_gate=send_gate)
                 return full[:max_total_chars]
 
             now = time.monotonic()
@@ -315,9 +323,7 @@ async def send_stream_as_messages(
                                 changed = True
                         if changed:
                             unsent = us
-                if not await _gate_allow(send_gate):
-                    return full
-                await _send_chunks(channel, unsent, MAX_LEN, allowed_mentions=allowed_mentions)
+                await _send_chunks(channel, unsent, MAX_LEN, allowed_mentions=allowed_mentions, send_gate=send_gate)
                 unsent = ""
                 last_send = now
                 await asyncio.sleep(0.1 + random.random() * 0.3)
@@ -337,8 +343,6 @@ async def send_stream_as_messages(
                         changed = True
                 if changed:
                     tail = ts
-        if not await _gate_allow(send_gate):
-            return full
-        await _send_chunks(channel, tail, MAX_LEN, allowed_mentions=allowed_mentions)
+        await _send_chunks(channel, tail, MAX_LEN, allowed_mentions=allowed_mentions, send_gate=send_gate)
 
     return full

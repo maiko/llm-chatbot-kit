@@ -140,7 +140,9 @@ def build_bot(cfg: Config, personality: Personality, *, stream: bool = True) -> 
 
         if not cfg.text_guild_ids or not cfg.text_channel_ids:
             raise ValueError("TEXT_GUILD_IDS and TEXT_CHANNEL_IDS are required for the configured text backend")
-        bot.text_backend = ChatCompletionsClient(cfg.text_api_base_url, cfg.openai_api_key, cfg.openai_model, cfg.text_ca_file)
+        if not cfg.text_api_key or not cfg.text_api_key.strip():
+            raise ValueError("TEXT_API_KEY is required for the configured text backend")
+        bot.text_backend = ChatCompletionsClient(cfg.text_api_base_url, cfg.text_api_key, cfg.openai_model, cfg.text_ca_file)
     store = MemoryStore(cfg.store_path) if cfg.text_enabled else None
     if cfg.image_enabled:
         from .image_commands import ImageCommands
@@ -273,22 +275,6 @@ def build_bot(cfg: Config, personality: Personality, *, stream: bool = True) -> 
         except Exception:
             rl_caps = {}
         limiter = MultiKeySlidingWindow(rl_caps, store.rate_windows_for(bot_id_str)) if bot_id_str else None
-
-        async def send_gate() -> bool:
-            if limiter is None:
-                return True
-            ok = True
-            try:
-                ok = limiter.allow("global", "all") and ok
-                ok = limiter.allow("channel", str(message.channel.id)) and ok
-                if is_dm:
-                    ok = limiter.allow("dm_user", str(getattr(message.author, "id", ""))) and ok
-                ok = limiter.allow("trigger_user", str(getattr(message.author, "id", ""))) and ok
-                if ok:
-                    store.save()
-            except Exception:
-                return False
-            return ok
 
         if not primary_trigger:
             # Consider spontaneous intervention in guild channels
@@ -482,6 +468,25 @@ def build_bot(cfg: Config, personality: Personality, *, stream: bool = True) -> 
         except Exception:
             pass
 
+        # Charge one response event, never its individual streaming bursts.
+        # Once admitted, finish delivery even if a quota window fills meanwhile.
+        if limiter is not None:
+            keys = {"global": "all", "channel": str(message.channel.id), "trigger_user": str(message.author.id)}
+            if is_dm:
+                keys["dm_user"] = str(message.author.id)
+            delay = limiter.reserve(keys)
+            if delay:
+                if not intervened:
+                    wait_seconds = int(delay) + 1
+                    notice = (
+                        f"Trop de demandes ; réessaie dans {wait_seconds} s."
+                        if (personality.language or "en").startswith("fr")
+                        else f"Too many requests; retry in {wait_seconds} s."
+                    )
+                    await message.channel.send(notice, allowed_mentions=discord.AllowedMentions.none())
+                return
+            store.save()
+
         convo = _conversation(
             history,
             personality.system_prompt + (env_context or ""),
@@ -529,7 +534,6 @@ def build_bot(cfg: Config, personality: Personality, *, stream: bool = True) -> 
                         strip_leading=[f"<@{bot.user.id}>", f"<@!{bot.user.id}>"] if bot.user else None,
                         allowed_mentions=no_pings,
                         max_total_chars=(personality.listen.response_max_chars if intervened else None),
-                        send_gate=send_gate,
                     )
                 finally:
                     if hasattr(deltas, "aclose"):
@@ -573,11 +577,6 @@ def build_bot(cfg: Config, personality: Personality, *, stream: bool = True) -> 
                     final_text = final_text[: max(0, int(personality.listen.response_max_chars))]
                 no_pings = discord.AllowedMentions(everyone=False, users=True, roles=False, replied_user=False)
                 for chunk in _chunk_message(final_text):
-                    try:
-                        if limiter is not None and not await send_gate():
-                            break
-                    except Exception:
-                        break
                     await message.channel.send(chunk, allowed_mentions=no_pings)
             except Exception as e2:
                 logger.exception("generate: non-stream failed error=%s", e2)
@@ -644,7 +643,10 @@ def build_bot(cfg: Config, personality: Personality, *, stream: bool = True) -> 
 def run(cfg: Config, personality: Personality, *, stream: bool = True) -> None:
     if not cfg.discord_token:
         raise ValueError("DISCORD_TOKEN is required")
-    if cfg.text_enabled and not cfg.openai_api_key:
-        raise ValueError("TEXT_API_KEY (local) or OPENAI_API_KEY (cloud) is required in chat/both mode")
+    if cfg.text_enabled:
+        key_name = "TEXT_API_KEY" if cfg.text_api_base_url else "OPENAI_API_KEY"
+        key = cfg.text_api_key if cfg.text_api_base_url else cfg.openai_api_key
+        if not key or not key.strip():
+            raise ValueError(f"{key_name} is required in chat/both mode")
     bot = build_bot(cfg, personality, stream=stream)
     bot.run(cfg.discord_token)

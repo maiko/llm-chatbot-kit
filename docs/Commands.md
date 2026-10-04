@@ -28,4 +28,4 @@ Message limits
 - Discord limits messages to ~2000 characters; the bot auto-chunks.
 
 Anti-spam rate limiting
-- Outbound send rate limiting is enforced per channel, DM peer, triggering user, and globally. Limits are configurable in the personality YAML under `rate_limit` and have safe defaults.
+- Reply admission is limited per channel, DM peer, triggering user, and globally. Limits are configurable under `rate_limit` in the personality YAML. One incoming event consumes one reservation across all dimensions; an admitted reply is always allowed to finish, regardless of its number of streaming bursts or Discord length-limit chunks. Image generation retains its separate queue quotas.

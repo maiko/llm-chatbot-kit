@@ -197,7 +197,12 @@ class ImageCommands:
                 payload = validate_request(prompt, preset, size, int(seed) if seed is not None else None, self.cfg.presets)
                 if not interaction.app_permissions.attach_files or not interaction.app_permissions.view_channel:
                     raise ImageError("missing_channel_permissions")
-                if not (interaction.app_permissions.send_messages or interaction.app_permissions.send_messages_in_threads):
+                send_permission = (
+                    interaction.app_permissions.send_messages_in_threads
+                    if isinstance(interaction.channel, discord.Thread)
+                    else interaction.app_permissions.send_messages
+                )
+                if not send_permission:
                     raise ImageError("missing_channel_permissions")
                 job = await self.enqueue(
                     interaction.id,
@@ -239,9 +244,14 @@ class ImageCommands:
         @app_commands.guilds(*guilds)
         @app_commands.guild_only()
         async def resolve(interaction: discord.Interaction, job_id: str, backend_idle_confirmed: bool):
-            if not await self.gate(interaction):
-                return
-            if not self.owner_id or str(interaction.user.id) != self.owner_id or not backend_idle_confirmed:
+            if (
+                not self.owner_id
+                or str(interaction.user.id) != self.owner_id
+                or interaction.user.bot
+                or interaction.guild_id not in self.cfg.guild_ids
+                or interaction.channel_id not in self.cfg.channel_ids
+                or not backend_idle_confirmed
+            ):
                 await interaction.response.send_message(text(self.language, "denied"), ephemeral=True)
                 return
             job = self.store.get(job_id)

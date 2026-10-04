@@ -43,3 +43,30 @@ class MultiKeySlidingWindow:
                 return False
         ts.append(now_ts)
         return True
+
+    def reserve(self, keys: Dict[str, str]) -> float:
+        """Atomically reserve one event across dimensions, or return its delay.
+
+        Denied attempts consume no capacity in any dimension. The small delay
+        margin respects the inclusive cutoff used by legacy ``allow`` callers.
+        """
+        now_ts = self.now()
+        buckets = []
+        delay = 0.0
+        for dim, key in keys.items():
+            windows = self.caps.get(dim, [])
+            if not windows:
+                continue
+            if any(window <= 0 or maximum <= 0 for window, maximum in windows):
+                raise ValueError("Rate limit windows and capacities must be positive")
+            ts = self._bucket_for(dim, key)
+            self._prune(ts, max(window for window, _ in windows), now_ts)
+            buckets.append(ts)
+            for window, maximum in windows:
+                active = [stamp for stamp in ts if stamp >= now_ts - window]
+                if len(active) >= maximum:
+                    delay = max(delay, active[-maximum] + window - now_ts + 0.001)
+        if delay == 0.0:
+            for ts in buckets:
+                ts.append(now_ts)
+        return delay

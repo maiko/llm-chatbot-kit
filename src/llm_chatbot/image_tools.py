@@ -6,7 +6,6 @@ import json
 
 from .image_client import ImageError
 from .image_commands import text
-from .image_status import render_status
 
 
 def image_tool(cfg) -> dict:
@@ -82,9 +81,9 @@ async def image_tool_receipt(feature, response, message):
         arguments = function.get("arguments")
         if not isinstance(arguments, str) or len(arguments) > 16000:
             raise ImageError("invalid_tool_arguments")
-        job = await feature.from_message(message, json.loads(arguments, object_pairs_hook=unique_object))
-        # Deterministic receipt: no follow-up inference, fabricated success or recursive tool loop.
-        return render_status(job, feature.store.queue_snapshot(job["id"]))
+        await feature.from_message(message, json.loads(arguments, object_pairs_hook=unique_object))
+        # Admission already publishes the one durable status message.
+        return ""
     except (ImageError, ValueError, TypeError, AttributeError):
         return text(feature.language, "error", error="image_tool_request_rejected")
 
@@ -169,6 +168,7 @@ class ImageToolStream:
             raise RuntimeError("text_backend_stream_incomplete")
         if tool:
             receipt = await image_tool_receipt(feature, {"tool_calls": [tool]}, message)
-            yield ("\n" if had_text else "") + receipt
+            if receipt:
+                yield ("\n" if had_text else "") + receipt
         elif finish == "tool_calls" or not had_text:
             raise RuntimeError("text_backend_unexpected_response")
