@@ -17,6 +17,10 @@ Available commands
   - `~cost pause on|off`
   - `~cost hardstop on|off`
 
+Listening `on`/`off` commands are owner-only and persist an explicit guild override
+of the persona's `listen.enabled` default. `listen status` reports the effective
+setting. The override survives bot restarts; a later `listen on` enables it again.
+
 Mentions and DMs
 - The bot replies in DMs and when mentioned in guild channels.
 
@@ -25,4 +29,3 @@ Message limits
 
 Anti-spam rate limiting
 - Outbound send rate limiting is enforced per channel, DM peer, triggering user, and globally. Limits are configurable in the personality YAML under `rate_limit` and have safe defaults.
-

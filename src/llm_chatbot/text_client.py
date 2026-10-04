@@ -74,16 +74,21 @@ class ChatCompletionsClient:
             raise RuntimeError("text_backend_unexpected_response")
         return message["content"], usage
 
-    async def deltas(self, messages: list[dict]):
+    async def events(self, messages: list[dict], tools: list[dict] | None = None):
+        """Bounded SSE events; completion requires the backend's explicit DONE marker."""
         if self.lock.locked():
             raise RuntimeError("text_backend_busy")
         async with self.lock:
-            async with self.http.stream("POST", "chat/completions", json=self.payload(messages, stream=True)) as response:
+            payload = self.payload(messages, stream=True)
+            if tools:
+                payload.update(tools=tools, tool_choice="auto", parallel_tool_calls=False, max_tokens=1024)
+                payload["stream_options"] = {"include_usage": True}
+            async with self.http.stream("POST", "chat/completions", json=payload) as response:
                 if response.status_code != 200:
                     raise RuntimeError("text_backend_backend_unavailable")
                 total = 0
                 async for line in response.aiter_lines():
-                    total += len(line)
+                    total += len(line.encode("utf-8"))
                     if total > 1024 * 1024:
                         raise RuntimeError("text_backend_response_too_large")
                     if not line.startswith("data:"):
@@ -92,11 +97,28 @@ class ChatCompletionsClient:
                     if value == "[DONE]":
                         return
                     event = json.loads(value)
-                    for choice in event.get("choices", []):
-                        delta = choice.get("delta", {}).get("content")
-                        if delta:
-                            yield delta
+                    if not isinstance(event, dict):
+                        raise RuntimeError("text_backend_unexpected_response")
+                    yield event
                 raise RuntimeError("text_backend_stream_incomplete")
+
+    async def deltas(self, messages: list[dict]):
+        events = self.events(messages)
+        try:
+            async for event in events:
+                for choice in event.get("choices", []):
+                    delta = choice.get("delta", {})
+                    if delta.get("tool_calls"):
+                        raise RuntimeError("text_backend_unexpected_tool")
+                    if choice.get("finish_reason") in {"length", "content_filter"}:
+                        raise RuntimeError("text_backend_response_truncated")
+                    content = delta.get("content")
+                    if content:
+                        if not isinstance(content, str):
+                            raise RuntimeError("text_backend_unexpected_response")
+                        yield content
+        finally:
+            await events.aclose()
 
     async def judge(self, messages: list[dict], threshold: float) -> tuple[bool, str, float]:
         response, _ = await self.complete(
