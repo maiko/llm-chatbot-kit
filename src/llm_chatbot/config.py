@@ -31,6 +31,7 @@ class Config:
     serialize_backends: bool = False
     image_tools_enabled: bool = False
     ready_file: Path | None = None
+    text_api_key: str | None = None
 
 
 def _maybe_migrate_cache(new_dir: Path, new_store: Path) -> None:
@@ -65,7 +66,7 @@ def load_config() -> Config:
 
     return Config(
         discord_token=os.environ.get("DISCORD_TOKEN", ""),
-        openai_api_key=os.environ.get("TEXT_API_KEY", os.environ.get("OPENAI_API_KEY", "")),
+        openai_api_key=os.environ.get("OPENAI_API_KEY", ""),
         # Default to mini for generation (user request)
         openai_model=os.environ.get("TEXT_MODEL", os.environ.get("OPENAI_MODEL", "gpt-5-mini")),
         openai_verbosity=os.environ.get("OPENAI_VERBOSITY", "low"),
@@ -76,6 +77,7 @@ def load_config() -> Config:
         text_enabled=mode in {"chat", "both"},
         image_enabled=mode in {"image", "both"},
         text_api_base_url=os.getenv("TEXT_API_BASE_URL") or None,
+        text_api_key=os.getenv("TEXT_API_KEY") or None,
         text_ca_file=os.getenv("TEXT_CA_FILE") or None,
         text_guild_ids=frozenset(int(v) for v in os.getenv("TEXT_GUILD_IDS", "").split(",") if v.strip()),
         text_channel_ids=frozenset(int(v) for v in os.getenv("TEXT_CHANNEL_IDS", "").split(",") if v.strip()),

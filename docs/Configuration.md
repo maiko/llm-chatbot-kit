@@ -6,7 +6,7 @@ Set environment variables before running the bot. A `.env.example` file shows th
 
 Core
 - `DISCORD_TOKEN`: required
-- `OPENAI_API_KEY`: required for the legacy cloud chat backend; configured text uses `TEXT_API_KEY`, image-only needs neither
+- `OPENAI_API_KEY`: required for the legacy cloud chat backend; configured text exclusively uses `TEXT_API_KEY`, image-only needs neither. Keys never fall back across backends. A configured text endpoint requires its own non-empty key even if an OpenAI key is present.
 - `OPENAI_MODEL`: default `gpt-5-mini` (override with `--model`)
 - `COMMAND_PREFIX`: default `~`
 - `MAX_TURNS`: default `20`

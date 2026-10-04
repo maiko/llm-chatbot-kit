@@ -25,7 +25,13 @@ streaming:
 `rate_hz` controls message pacing. `min_first` and `min_next` are character
 thresholds; complete-line boundaries and an early-first-flush timeout can also
 trigger a send. Increase `min_next` to reduce bursts for long or code-heavy replies.
-Outbound persona rate limits still apply. Early exits close the backend iterator
+Persona rate limits admit one response per incoming event before generation,
+across all configured dimensions atomically. Once admitted, the whole reply is
+delivered, including length-limit splits and the final tail; streaming bursts do
+not consume additional quota. A refused addressed event receives a retry notice;
+passive interventions are skipped. Discord transport limits and streaming pacing
+still apply. Delivery failures are explicit and do not save unsent text as a
+completed reply. Early exits close the backend iterator
 and release its connection/lock, without executing an incomplete image tool.
 
 Use `--no-stream` to wait for the complete reply. See [Images](Images.md) for queue,
