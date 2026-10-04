@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+import logging
 from contextlib import ExitStack, closing
 from typing import Optional
 
@@ -15,6 +16,8 @@ from .image_config import ImageConfig
 from .image_jobs import ACTIVE, ImageWorker, JobStore
 from .image_quality import QualityView
 from .image_status import ImageStatus, render_status
+
+logger = logging.getLogger(__name__)
 
 TEXT = {
     "en": {
@@ -72,9 +75,18 @@ class ImageCommands:
         mode = self.store.preferred_mode(message.author.id, message.guild.id)
         return self.cfg.mode_presets.get(mode, self.cfg.default_preset)
 
-    async def enqueue(self, job_id, user_id, guild_id, channel, payload, filesize_limit, preset=None, source=None) -> dict:
+    async def enqueue(
+        self, job_id, user_id, guild_id, channel, payload, filesize_limit, preset=None, source=None, acknowledgement=None
+    ) -> dict:
+        existing = self.store.get(str(job_id))
         job = self.store.admit(job_id, user_id, guild_id, channel.id, payload, self.language, filesize_limit, preset=preset, source=source)
         try:
+            if acknowledgement and existing is None:
+                try:
+                    await channel.send(acknowledgement, allowed_mentions=discord.AllowedMentions.none())
+                except Exception as exc:
+                    # Admission is durable: an uncertain acknowledgement send must not cause a second job/send.
+                    logger.warning("image_acknowledgement id=%s failed=%s", job["id"], type(exc).__name__)
             await self.status.publish(job, channel)
         finally:
             self.worker.wake.set()
@@ -90,7 +102,7 @@ class ImageCommands:
             or not self.cfg.permits(message.guild.id, message.channel.id, roles)
         ):
             raise ImageError("access_denied")
-        if not isinstance(arguments, dict) or set(arguments) - {"prompt", "preset", "size"}:
+        if not isinstance(arguments, dict) or set(arguments) - {"prompt", "preset", "size", "summary"}:
             raise ImageError("invalid_tool_arguments")
         prompt = arguments.get("prompt")
         preset = arguments.get("preset", self.preferred_preset(message))
@@ -101,7 +113,20 @@ class ImageCommands:
         size = source.size if source is not None else arguments.get("size", "1024x1024")
         if not all(isinstance(value, str) for value in (prompt, preset, size)):
             raise ImageError("invalid_tool_arguments")
+        summary = arguments.get("summary")
+        if summary is not None and (not isinstance(summary, str) or not summary.strip() or len(summary) > 160):
+            raise ImageError("invalid_tool_arguments")
         payload = validate_request(prompt, preset, size, None, self.cfg.presets)
+        summary = " ".join((summary or " ".join(prompt.split()[:12])).split())[:160]
+        summary = discord.utils.escape_mentions(discord.utils.escape_markdown(summary))
+        username = discord.utils.escape_mentions(
+            discord.utils.escape_markdown(str(getattr(message.author, "display_name", message.author.id)))
+        )[:80]
+        acknowledgement = (
+            f"Ok je te génère ton image {username} : {summary}"
+            if self.language == "fr"
+            else f"OK, I’ll generate your image {username}: {summary}"
+        )
         permissions = message.channel.permissions_for(message.guild.me)
         send = permissions.send_messages_in_threads if isinstance(message.channel, discord.Thread) else permissions.send_messages
         if not permissions.view_channel or not send or not permissions.attach_files:
@@ -117,6 +142,7 @@ class ImageCommands:
             message.guild.filesize_limit,
             preset=preset,
             source=source.data if source is not None else None,
+            acknowledgement=acknowledgement,
         )
 
     async def deliver(self, job: dict, path) -> str:

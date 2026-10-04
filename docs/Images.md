@@ -347,3 +347,10 @@ replies bypass photo access checks. Photo normalization runs in two bounded work
 threads, and cancelled downloads do not release a normalization slot early. Startup
 and cleanup remove orphan snowflake-named source PNGs and temporary source files
 under the exclusive image-store lock. Retained sources still follow job retention.
+
+Conversational image calls accept an optional `summary` (1–160 characters) in the
+user's language. Once admission succeeds, the bot sends a brief acknowledgement
+with the requester display name and summary, then publishes the separate progress
+message. Missing summaries fall back to the first 12 prompt words. Rejected or
+duplicate requests do not publish another acknowledgement; an uncertain transport
+send is never retried automatically.

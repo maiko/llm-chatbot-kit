@@ -82,6 +82,12 @@ def image_tool(cfg) -> dict:
                 "type": "object",
                 "properties": {
                     "prompt": {"type": "string", "minLength": 1, "maxLength": 4000},
+                    "summary": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 160,
+                        "description": "A concise 3–12 word summary in the user's language for the acknowledgement; no technical settings.",
+                    },
                     "preset": {"type": "string", "enum": list(cfg.presets)},
                     "size": {"type": "string", "description": "Width x height, for example 1024x1024; obey configured limits."},
                 },
@@ -123,7 +129,8 @@ def tool_guidance(cfg, default_preset=None, source=None) -> str:
         "subject and requested details, describing composition, lighting and style clearly. "
         "Call at most one tool, with one image. Never claim an image is generated or delivered before tool execution. "
         "When generating an image, call the tool directly without a text preamble; "
-        "the application publishes the actual queue status and eventual image. "
+        "include a concise summary in the user's language in the tool arguments; "
+        "the application sends the acknowledgement before publishing a separate progress message and eventual image. "
         f"Default preset: {default_preset or cfg.default_preset}. Size limits per preset: {json.dumps(limits)}.\n"
         + (
             "A source photo is available from the current attachment or same-channel reply. "
