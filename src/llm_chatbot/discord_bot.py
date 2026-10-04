@@ -138,6 +138,8 @@ def build_bot(cfg: Config, personality: Personality, *, stream: bool = True) -> 
                 self.images = None
             await super().close()
 
+    if cfg.text_vision_enabled and not (cfg.text_enabled and cfg.text_api_base_url):
+        raise ValueError("TEXT_VISION_ENABLED requires a configured Chat Completions backend")
     bot = KitBot(command_prefix=effective_prefix, intents=intents)
     if cfg.text_enabled and cfg.text_api_base_url:
         from .text_client import ChatCompletionsClient
@@ -559,8 +561,29 @@ def build_bot(cfg: Config, personality: Personality, *, stream: bool = True) -> 
             add_meta=not truncation_active,
         )
 
+        source = None
+        if primary_trigger and bot.text_backend and (cfg.text_vision_enabled or (bot.images and bot.images.cfg.edits_enabled)):
+            from .discord_media import resolve_source, with_image
+            from .image_client import ImageError
+            from .image_tools import tool_error
+
+            try:
+                source = await resolve_source(message)
+                if source is not None and cfg.text_vision_enabled:
+                    convo = with_image(convo, source, message.id)
+                if not await text_access(message):
+                    return
+            except ImageError as exc:
+                reply = (
+                    tool_error(personality.language or "en", str(exc))
+                    .replace("Génération non lancée", "Photo non traitée")
+                    .replace("Generation not started", "Photo not processed")
+                )
+                await message.channel.send(reply, allowed_mentions=discord.AllowedMentions.none())
+                return
+
         # Build Responses API typed input items (developer/user/assistant)
-        input_items = _messages_to_responses_payload(convo)
+        input_items = _messages_to_responses_payload(convo) if not bot.text_backend else []
 
         # Stream (default) or non-stream path
         input_tokens = output_tokens = cached_tokens = 0
@@ -573,7 +596,7 @@ def build_bot(cfg: Config, personality: Personality, *, stream: bool = True) -> 
                 if use_image_tool:
                     from .image_tools import ImageToolStream
 
-                    deltas = ImageToolStream(bot.text_backend, bot.images, convo, message)
+                    deltas = ImageToolStream(bot.text_backend, bot.images, convo, message, source)
                 elif bot.text_backend:
                     deltas = bot.text_backend.deltas(convo)
                 else:
@@ -619,7 +642,7 @@ def build_bot(cfg: Config, personality: Personality, *, stream: bool = True) -> 
                 if use_image_tool:
                     from .image_tools import complete_with_image_tool
 
-                    final_text, usage = await complete_with_image_tool(bot.text_backend, bot.images, convo, message)
+                    final_text, usage = await complete_with_image_tool(bot.text_backend, bot.images, convo, message, source)
                 else:
                     final_text, usage = (
                         await bot.text_backend.complete(convo)

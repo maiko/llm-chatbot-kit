@@ -72,15 +72,15 @@ class ImageCommands:
         mode = self.store.preferred_mode(message.author.id, message.guild.id)
         return self.cfg.mode_presets.get(mode, self.cfg.default_preset)
 
-    async def enqueue(self, job_id, user_id, guild_id, channel, payload, filesize_limit, preset=None) -> dict:
-        job = self.store.admit(job_id, user_id, guild_id, channel.id, payload, self.language, filesize_limit, preset=preset)
+    async def enqueue(self, job_id, user_id, guild_id, channel, payload, filesize_limit, preset=None, source=None) -> dict:
+        job = self.store.admit(job_id, user_id, guild_id, channel.id, payload, self.language, filesize_limit, preset=preset, source=source)
         try:
             await self.status.publish(job, channel)
         finally:
             self.worker.wake.set()
         return self.store.get(job["id"])
 
-    async def from_message(self, message, arguments: dict) -> dict:
+    async def from_message(self, message, arguments: dict, source=None) -> dict:
         """Tool arguments cannot choose a requester, destination, endpoint or model ID."""
         roles = {role.id for role in getattr(message.author, "roles", [])}
         if (
@@ -94,7 +94,11 @@ class ImageCommands:
             raise ImageError("invalid_tool_arguments")
         prompt = arguments.get("prompt")
         preset = arguments.get("preset", self.preferred_preset(message))
-        size = arguments.get("size", "1024x1024")
+        if source is not None and (not self.cfg.edits_enabled or not self.cfg.presets.get(preset, {}).get("supports_edits", False)):
+            raise ImageError("image_edit_unsupported")
+        if source is not None and "size" in arguments:
+            raise ImageError("invalid_tool_arguments")
+        size = source.size if source is not None else arguments.get("size", "1024x1024")
         if not all(isinstance(value, str) for value in (prompt, preset, size)):
             raise ImageError("invalid_tool_arguments")
         payload = validate_request(prompt, preset, size, None, self.cfg.presets)
@@ -105,7 +109,14 @@ class ImageCommands:
         if not message.channel.permissions_for(message.author).view_channel:
             raise ImageError("requester_access_revoked")
         return await self.enqueue(
-            message.id, message.author.id, message.guild.id, message.channel, payload, message.guild.filesize_limit, preset=preset
+            message.id,
+            message.author.id,
+            message.guild.id,
+            message.channel,
+            payload,
+            message.guild.filesize_limit,
+            preset=preset,
+            source=source.data if source is not None else None,
         )
 
     async def deliver(self, job: dict, path) -> str:
@@ -137,6 +148,8 @@ class ImageCommands:
             size=options.get("size", "?"),
             seed=options.get("seed", "?"),
         )
+        if options.get("operation") == "edit":
+            caption += " · " + ("Photo retouchée" if job["language"] == "fr" else "Edited photo")
         if "seed" in options:
             caption += f" · seed {options['seed']}"
         caption += f" · <@{job['user_id']}>"
@@ -237,6 +250,51 @@ class ImageCommands:
             except (ImageError, ValueError) as exc:
                 message = text(self.language, "error", error=str(exc) if isinstance(exc, ImageError) else "invalid_seed")
             await interaction.followup.send(message, ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
+
+        if self.cfg.edits_enabled:
+
+            @self.bot.tree.command(name="image-edit", description="Edit an attached photo with an instruction")
+            @app_commands.guilds(*guilds)
+            @app_commands.choices(
+                mode=[app_commands.Choice(name="Fast", value="fast"), app_commands.Choice(name="Quality", value="quality")]
+            )
+            async def image_edit(interaction: discord.Interaction, image: discord.Attachment, prompt: str, mode: Optional[str] = None):
+                if not await self.gate(interaction):
+                    return
+                await interaction.response.defer(ephemeral=True, thinking=True)
+                try:
+                    from .discord_media import read_attachment
+
+                    if mode is not None and mode not in self.cfg.mode_presets:
+                        raise ImageError("invalid_image_mode")
+                    selected = mode or self.store.preferred_mode(interaction.user.id, interaction.guild_id)
+                    preset = self.cfg.mode_presets.get(selected, self.cfg.default_preset)
+                    if not self.cfg.presets[preset].get("supports_edits", False):
+                        raise ImageError("image_edit_unsupported")
+                    perms = interaction.app_permissions
+                    send = perms.send_messages_in_threads if isinstance(interaction.channel, discord.Thread) else perms.send_messages
+                    if not perms.view_channel or not perms.attach_files or not send:
+                        raise ImageError("missing_channel_permissions")
+                    source = await read_attachment(image)
+                    if not self.allowed(interaction) or not interaction.channel.permissions_for(interaction.user).view_channel:
+                        raise ImageError("requester_access_revoked")
+                    payload = validate_request(prompt, preset, source.size, None, self.cfg.presets)
+                    job = await self.enqueue(
+                        interaction.id,
+                        interaction.user.id,
+                        interaction.guild_id,
+                        interaction.channel,
+                        payload,
+                        min(interaction.filesize_limit, interaction.guild.filesize_limit),
+                        preset=preset,
+                        source=source.data,
+                    )
+                    reply = render_status(job, self.store.queue_snapshot(job["id"]))
+                except ImageError as exc:
+                    from .image_tools import tool_error
+
+                    reply = tool_error(self.language, str(exc))
+                await interaction.followup.send(reply, ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
 
         if self.cfg.mode_presets:
 
@@ -362,7 +420,15 @@ class ImageCommands:
             send = permissions.send_messages_in_threads if isinstance(interaction.channel, discord.Thread) else permissions.send_messages
             if not permissions.view_channel or not permissions.attach_files or not send:
                 raise ImageError("missing_channel_permissions")
+            source = None
+            if options.get("operation") == "edit":
+                source_path = self.store.source_artifact(job["id"])
+                if not source_path.exists():
+                    raise ImageError("quality_source_unavailable")
+                source = source_path.read_bytes()
             preset = self.cfg.mode_presets["quality"]
+            if source is not None and (not self.cfg.edits_enabled or not self.cfg.presets[preset].get("supports_edits", False)):
+                raise ImageError("image_edit_unsupported")
             payload = validate_request(options["prompt"], preset, options["size"], options["seed"], self.cfg.presets)
             queued = await self.enqueue(
                 interaction.id,
@@ -372,6 +438,7 @@ class ImageCommands:
                 payload,
                 min(interaction.filesize_limit, interaction.guild.filesize_limit),
                 preset=preset,
+                source=source,
             )
             reply = render_status(queued, self.store.queue_snapshot(queued["id"]))
         except ImageError as exc:
