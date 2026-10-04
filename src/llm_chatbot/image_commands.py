@@ -13,6 +13,7 @@ from discord import app_commands
 from .image_client import ImageClient, ImageError, validate_request
 from .image_config import ImageConfig
 from .image_jobs import ACTIVE, ImageWorker, JobStore
+from .image_quality import QualityView
 from .image_status import ImageStatus, render_status
 
 TEXT = {
@@ -65,8 +66,14 @@ class ImageCommands:
             return False
         return True
 
-    async def enqueue(self, job_id, user_id, guild_id, channel, payload, filesize_limit) -> dict:
-        job = self.store.admit(job_id, user_id, guild_id, channel.id, payload, self.language, filesize_limit)
+    def preferred_preset(self, message) -> str:
+        if not message.guild:
+            return self.cfg.default_preset
+        mode = self.store.preferred_mode(message.author.id, message.guild.id)
+        return self.cfg.mode_presets.get(mode, self.cfg.default_preset)
+
+    async def enqueue(self, job_id, user_id, guild_id, channel, payload, filesize_limit, preset=None) -> dict:
+        job = self.store.admit(job_id, user_id, guild_id, channel.id, payload, self.language, filesize_limit, preset=preset)
         try:
             await self.status.publish(job, channel)
         finally:
@@ -86,7 +93,7 @@ class ImageCommands:
         if not isinstance(arguments, dict) or set(arguments) - {"prompt", "preset", "size"}:
             raise ImageError("invalid_tool_arguments")
         prompt = arguments.get("prompt")
-        preset = arguments.get("preset", self.cfg.default_preset)
+        preset = arguments.get("preset", self.preferred_preset(message))
         size = arguments.get("size", "1024x1024")
         if not all(isinstance(value, str) for value in (prompt, preset, size)):
             raise ImageError("invalid_tool_arguments")
@@ -97,7 +104,9 @@ class ImageCommands:
             raise ImageError("missing_channel_permissions")
         if not message.channel.permissions_for(message.author).view_channel:
             raise ImageError("requester_access_revoked")
-        return await self.enqueue(message.id, message.author.id, message.guild.id, message.channel, payload, message.guild.filesize_limit)
+        return await self.enqueue(
+            message.id, message.author.id, message.guild.id, message.channel, payload, message.guild.filesize_limit, preset=preset
+        )
 
     async def deliver(self, job: dict, path) -> str:
         await self.bot.wait_until_ready()
@@ -142,6 +151,7 @@ class ImageCommands:
                 if len(prompt_attachment) > min(job["filesize_limit"], channel.guild.filesize_limit):
                     raise ImageError("prompt_attachment_too_large")
                 caption += f"\nPrompt : prompt-{job['id']}.txt"
+        view = self.quality_view(job)
         async with self.status.lock:
             current = self.store.get(job["id"])
             status_id = current["status_message_id"]
@@ -157,6 +167,7 @@ class ImageCommands:
                         delivered = await message.edit(
                             content=caption,
                             attachments=attachments,
+                            view=view,
                             allowed_mentions=discord.AllowedMentions.none(),
                         )
                         return str(delivered.id)
@@ -165,7 +176,7 @@ class ImageCommands:
                         self.store.save_status(job["id"], "unavailable")
                         for attachment in attachments:
                             attachment.reset()
-                message = await channel.send(caption, files=attachments, allowed_mentions=discord.AllowedMentions.none())
+                message = await channel.send(caption, files=attachments, view=view, allowed_mentions=discord.AllowedMentions.none())
                 return str(message.id)
 
     def own_job(self, interaction, job_id: str | None) -> dict | None:
@@ -180,19 +191,27 @@ class ImageCommands:
         @self.bot.tree.command(name="imagine", description="Generate an image with the configured image backend")
         @app_commands.guilds(*guilds)
         @app_commands.guild_only()
+        @app_commands.choices(
+            mode=[app_commands.Choice(name="Rapide / Fast", value="fast"), app_commands.Choice(name="Qualité / Quality", value="quality")]
+        )
         @app_commands.choices(preset=[app_commands.Choice(name=name, value=name) for name in self.cfg.presets])
         async def imagine(
             interaction: discord.Interaction,
             prompt: str,
-            preset: str = self.cfg.default_preset,
+            preset: Optional[str] = None,
             size: str = "1024x1024",
             seed: Optional[str] = None,
+            mode: Optional[str] = None,
         ):
             if not await self.gate(interaction):
                 return
             # Defer before any persistence or remote work, including rejected jobs.
             await interaction.response.defer(ephemeral=True, thinking=True)
             try:
+                if mode is not None and (mode not in self.cfg.mode_presets or preset is not None):
+                    raise ImageError("choose_mode_or_preset")
+                selected_mode = mode or self.store.preferred_mode(interaction.user.id, interaction.guild_id)
+                preset = preset or self.cfg.mode_presets.get(selected_mode, self.cfg.default_preset)
                 # String avoids Discord's IEEE-754 integer precision limit for 64-bit seeds.
                 payload = validate_request(prompt, preset, size, int(seed) if seed is not None else None, self.cfg.presets)
                 if not interaction.app_permissions.attach_files or not interaction.app_permissions.view_channel:
@@ -211,12 +230,39 @@ class ImageCommands:
                     interaction.channel,
                     payload,
                     min(interaction.filesize_limit, interaction.guild.filesize_limit),
+                    preset=preset,
                 )
                 current = self.store.get(job["id"])
                 message = render_status(current, self.store.queue_snapshot(job["id"]))
             except (ImageError, ValueError) as exc:
                 message = text(self.language, "error", error=str(exc) if isinstance(exc, ImageError) else "invalid_seed")
             await interaction.followup.send(message, ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
+
+        if self.cfg.mode_presets:
+
+            @self.bot.tree.command(name="image-mode", description="Choose your default image speed and quality in this server")
+            @app_commands.guilds(*guilds)
+            @app_commands.guild_only()
+            @app_commands.choices(
+                mode=[
+                    app_commands.Choice(name="Rapide / Fast", value="fast"),
+                    app_commands.Choice(name="Qualité / Quality", value="quality"),
+                ]
+            )
+            async def image_mode(interaction: discord.Interaction, mode: str):
+                if not await self.gate(interaction):
+                    return
+                self.store.set_mode(interaction.user.id, interaction.guild_id, mode)
+                reply = ("Mode image : " if self.language == "fr" else "Image mode: ") + mode
+                await interaction.response.send_message(reply, ephemeral=True)
+
+        if self.cfg.quality_rerun_enabled:
+
+            @self.bot.tree.command(name="image-quality", description="Explicitly regenerate your fast image using the quality preset")
+            @app_commands.guilds(*guilds)
+            @app_commands.guild_only()
+            async def image_quality(interaction: discord.Interaction, job_id: Optional[str] = None):
+                await self.rerun_quality(interaction, job_id)
 
         @self.bot.tree.command(name="image-status", description="Check your latest image job")
         @app_commands.guilds(*guilds)
@@ -287,7 +333,58 @@ class ImageCommands:
             with closing(discord.File(path, filename=f"image-{job['id']}.png")) as attachment:
                 await interaction.followup.send(file=attachment, ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
 
+    def quality_view(self, job: dict):
+        options = json.loads(job["options"] or "{}")
+        if (
+            self.cfg.quality_rerun_enabled
+            and options.get("preset") == self.cfg.mode_presets["fast"]
+            and "prompt" in options
+            and "seed" in options
+        ):
+            return QualityView(self, job["id"], job["language"])
+        return None
+
+    async def rerun_quality(self, interaction, job_id=None):
+        if not await self.gate(interaction):
+            return
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        try:
+            self.store.cleanup()
+            job = self.own_job(interaction, job_id)
+            if not self.cfg.quality_rerun_enabled or not job or job["state"] not in {"sent", "delivery_failed", "delivery_unknown"}:
+                raise ImageError("quality_source_unavailable")
+            options = json.loads(job["options"] or "{}")
+            if options.get("preset") != self.cfg.mode_presets["fast"] or "prompt" not in options or "seed" not in options:
+                raise ImageError("quality_source_unavailable")
+            if not interaction.channel.permissions_for(interaction.user).view_channel:
+                raise ImageError("requester_access_revoked")
+            permissions = interaction.app_permissions
+            send = permissions.send_messages_in_threads if isinstance(interaction.channel, discord.Thread) else permissions.send_messages
+            if not permissions.view_channel or not permissions.attach_files or not send:
+                raise ImageError("missing_channel_permissions")
+            preset = self.cfg.mode_presets["quality"]
+            payload = validate_request(options["prompt"], preset, options["size"], options["seed"], self.cfg.presets)
+            queued = await self.enqueue(
+                interaction.id,
+                interaction.user.id,
+                interaction.guild_id,
+                interaction.channel,
+                payload,
+                min(interaction.filesize_limit, interaction.guild.filesize_limit),
+                preset=preset,
+            )
+            reply = render_status(queued, self.store.queue_snapshot(queued["id"]))
+        except ImageError as exc:
+            reply = text(self.language, "error", error=str(exc))
+        await interaction.followup.send(reply, ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
+
     async def setup(self) -> None:
+        self.store.cleanup()
+        if self.cfg.quality_rerun_enabled:
+            for row in self.store.db.execute("SELECT id,message_id FROM jobs WHERE state='sent' AND message_id IS NOT NULL").fetchall():
+                view = self.quality_view(self.store.get(row["id"]))
+                if view and row["message_id"].isdecimal():
+                    self.bot.add_view(view, message_id=int(row["message_id"]))
         if self.cfg.sync_commands:
             for value in sorted(self.cfg.guild_ids):
                 await self.bot.tree.sync(guild=discord.Object(id=value))

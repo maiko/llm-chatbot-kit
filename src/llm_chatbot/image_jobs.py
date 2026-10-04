@@ -48,6 +48,9 @@ class JobStore:
                 self.db.execute(f"ALTER TABLE jobs ADD COLUMN {name} TEXT")
         self.db.execute("UPDATE jobs SET state='unknown', payload=NULL, error='restart_during_generation' WHERE state='running'")
         self.db.execute("UPDATE jobs SET state='delivery_unknown', error='restart_during_upload' WHERE state='delivering'")
+        self.db.execute(
+            "CREATE TABLE IF NOT EXISTS image_preferences (guild_id TEXT, user_id TEXT, mode TEXT NOT NULL, PRIMARY KEY(guild_id,user_id))"
+        )
         self.db.commit()
         for row in self.db.execute("SELECT id FROM jobs WHERE state NOT IN ('queued','running','ready','delivering')").fetchall():
             self.clear_delivery_prompt(row["id"])
@@ -82,7 +85,27 @@ class JobStore:
         ).fetchone()
         return self.get(row["id"]) if row else None
 
-    def admit(self, job_id: int, user_id: int, guild_id: int, channel_id: int, payload: dict, language: str, filesize_limit: int) -> dict:
+    def preferred_mode(self, user_id: int, guild_id: int) -> str:
+        row = self.db.execute("SELECT mode FROM image_preferences WHERE guild_id=? AND user_id=?", (str(guild_id), str(user_id))).fetchone()
+        return row[0] if row and row[0] in self.cfg.mode_presets else self.cfg.default_mode
+
+    def set_mode(self, user_id: int, guild_id: int, mode: str) -> None:
+        if mode not in self.cfg.mode_presets:
+            raise ImageError("invalid_image_mode")
+        with self.db:
+            self.db.execute("INSERT OR REPLACE INTO image_preferences VALUES (?,?,?)", (str(guild_id), str(user_id), mode))
+
+    def admit(
+        self,
+        job_id: int,
+        user_id: int,
+        guild_id: int,
+        channel_id: int,
+        payload: dict,
+        language: str,
+        filesize_limit: int,
+        preset: str | None = None,
+    ) -> dict:
         self.cleanup()
         existing = self.get(str(job_id))
         if existing:
@@ -115,7 +138,8 @@ class JobStore:
                     filesize_limit,
                     json.dumps(
                         {key: payload[key] for key in ("model", "quality", "size", "seed") if key in payload}
-                        | ({"prompt": payload["prompt"]} if self.cfg.include_prompt else {})
+                        | ({"prompt": payload["prompt"]} if self.cfg.include_prompt or self.cfg.quality_rerun_enabled else {})
+                        | ({"preset": preset} if preset else {})
                     ),
                 ),
             )
@@ -146,7 +170,8 @@ class JobStore:
         job = self.get(job_id)
         if job:
             options = json.loads(job["options"] or "{}")
-            if "prompt" in options:
+            retain = self.cfg.quality_rerun_enabled and job["state"] in {"sent", "delivery_failed", "delivery_unknown"}
+            if "prompt" in options and not retain:
                 del options["prompt"]
                 with self.db:
                     self.db.execute("UPDATE jobs SET options=? WHERE id=?", (json.dumps(options), job_id))

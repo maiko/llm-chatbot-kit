@@ -113,11 +113,45 @@ not on reconnect. It writes Discord command state. Invite with `bot` and
 `applications.commands`; grant View Channel, Send Messages (or Send Messages
 in Threads) and Attach Files in the allowed channels. Administrator is unnecessary.
 
+## Fast and quality modes
+
+Optionally map two modes to existing presets:
+
+```dotenv
+IMAGE_MODE_PRESETS_JSON={"fast":"preview","quality":"default"}
+IMAGE_DEFAULT_MODE=quality
+IMAGE_QUALITY_RERUN_ENABLED=true
+```
+
+The mappings are operator configuration; the kit does not choose models, sampling
+steps or deployment locations. Both presets must support seeds when reruns are enabled.
+Run guild command synchronization after enabling these options.
+
+`/image-mode fast` or `/image-mode quality` saves your default for this server,
+independently of other members and servers. `/imagine mode:fast` or `mode:quality`
+overrides it for one request. An explicit `preset` also overrides the default;
+select either a mode or a preset, not both. Image tool guidance uses the member's
+selected preset, and calls without a preset inherit it.
+
+With reruns enabled, a completed fast image includes **Regenerate in quality**.
+Only its requester can use the button or `/image-quality [job_id]`. This submits a
+new job with the same prompt, seed and dimensions through the configured quality
+preset. Queue limits, daily quotas and current channel/role permissions apply.
+It is a new generation, not an upscale: changing models or settings can change
+composition despite an identical seed. An uncertain generation cannot be rerun.
+
+Enabling reruns retains the prompt alongside the completed image until
+`IMAGE_RETENTION_HOURS` expires (24 hours by default), even when prompt publication
+is disabled. Cancelled, failed and uncertain-generation prompts are erased.
+Buttons are restored after restart; expired jobs fail without submitting anything.
+Server-specific mode preferences remain in the private state database until removed
+by the operator. With reruns disabled, existing terminal prompt erasure is unchanged.
+
 ## Commands and progress
 
 | Command | Behavior |
 |---|---|
-| `/imagine prompt preset size seed` | Validate and queue one image using a configured preset. |
+| `/imagine prompt preset size seed mode` | Validate and queue one image using a configured preset. |
 | `/image-status [job_id]` | Your job's state, position, queue size and safe error code; private reply. |
 | `/image-cancel [job_id]` | Cancel your own pending job; never interrupts a running backend task. |
 | `/image-result [job_id]` | Privately retrieve your retained PNG without regeneration. Explicit retrieval may produce another copy. |
@@ -204,8 +238,8 @@ Directory permissions are `0700`, DB/PNG `0600`; protect volume backups as well.
 By default, prompts are kept only while queued/running and removed at ready/terminal states.
 With `IMAGE_INCLUDE_PROMPT=true`, the exact API prompt is retained through delivery
 and published with the final image, inline or as a UTF-8 text attachment when
-it exceeds Discord's message length. It is erased from the queue on terminal states,
-cancellation and uncertain recovery. `/image-result` retrieves only the retained PNG.
+it exceeds Discord's message length. Unless quality reruns are enabled, it is erased
+from the queue on terminal states; cancellation and uncertain recovery always erase it. `/image-result` retrieves only the retained PNG.
 Enable this option only when prompt publication is wanted.
 Completed jobs expire after `IMAGE_RETENTION_HOURS` (default/minimum 24 hours,
 preserving quota accounting). Pending and unresolved generations survive restart.

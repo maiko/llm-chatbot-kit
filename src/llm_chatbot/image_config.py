@@ -33,8 +33,24 @@ class ImageConfig:
     include_prompt: bool = False
     prompt_guidance: str = ""
     progress_enabled: bool = False
+    mode_presets: dict = field(default_factory=dict)
+    default_mode: str = "quality"
+    quality_rerun_enabled: bool = False
 
     def __post_init__(self):
+        if not isinstance(self.mode_presets, dict):
+            raise ValueError("IMAGE_MODE_PRESETS_JSON must be an object")
+        if self.mode_presets and (
+            set(self.mode_presets) != {"fast", "quality"}
+            or any(not isinstance(value, str) or value not in self.presets for value in self.mode_presets.values())
+        ):
+            raise ValueError("IMAGE_MODE_PRESETS_JSON must map fast and quality to configured presets")
+        if self.default_mode not in {"fast", "quality"}:
+            raise ValueError("IMAGE_DEFAULT_MODE must be fast or quality")
+        if self.quality_rerun_enabled and (
+            not self.mode_presets or any(not self.presets[name].get("supports_seed", False) for name in self.mode_presets.values())
+        ):
+            raise ValueError("Quality reruns require both mode presets to support seeds")
         if not isinstance(self.prompt_guidance, str) or len(self.prompt_guidance) > 16000:
             raise ValueError("Image prompt guidance must be text up to 16000 characters")
         if not isinstance(self.presets, dict) or not 1 <= len(self.presets) <= 25 or self.default_preset not in self.presets:
@@ -74,6 +90,9 @@ class ImageConfig:
             sync_commands=os.getenv("IMAGE_SYNC_COMMANDS", "false").lower() == "true",
             presets=json.loads(os.getenv("IMAGE_PRESETS_JSON", '{"default":{"model":"default"}}')),
             default_preset=os.getenv("IMAGE_DEFAULT_PRESET", "default"),
+            mode_presets=json.loads(os.getenv("IMAGE_MODE_PRESETS_JSON", "{}")),
+            default_mode=os.getenv("IMAGE_DEFAULT_MODE", "quality"),
+            quality_rerun_enabled=os.getenv("IMAGE_QUALITY_RERUN_ENABLED", "false").lower() == "true",
             progress_enabled=os.getenv("IMAGE_PROGRESS_ENABLED", "false").lower() == "true",
             include_prompt=os.getenv("IMAGE_INCLUDE_PROMPT", "false").lower() == "true",
             prompt_guidance=(
