@@ -34,6 +34,7 @@ from .runtime_utils import (
     _effective_model_and_params,
     _effective_truncation,
     _maybe_alert_owner,
+    render_custom_emojis,
 )
 from .streaming import send_stream_as_messages, stream_deltas
 
@@ -674,7 +675,7 @@ def build_bot(cfg: Config, personality: Personality, *, stream: bool = True) -> 
                     )
                 input_tokens, output_tokens, cached_tokens = usage
                 # Sanitize leading self-mention; allow user mentions (block roles/everyone)
-                final_text = _strip_leading_self_mention(final_text)
+                final_text = render_custom_emojis(_strip_leading_self_mention(final_text), message.guild)
                 if intervened and personality.listen.response_max_chars:
                     final_text = final_text[: max(0, int(personality.listen.response_max_chars))]
                 no_pings = discord.AllowedMentions(everyone=False, users=True, roles=False, replied_user=False)

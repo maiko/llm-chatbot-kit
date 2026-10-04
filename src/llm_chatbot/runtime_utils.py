@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any, Tuple
 
 # Optional dependency: discord.py. Guard import for test environments.
@@ -29,7 +30,33 @@ def _chunk_message(text: str, limit: int = 1990) -> list[str]:
 
     The default limit accounts for a small margin under Discord's ~2000 char cap.
     """
-    return [text[i : i + limit] for i in range(0, len(text), limit)]
+    chunks = []
+    while text:
+        end = min(len(text), limit)
+        if end < len(text):
+            for token in re.finditer(r"<a?:[A-Za-z0-9_]+:[0-9]+>", text):
+                if token.start() < end < token.end():
+                    end = token.start() or end
+                    break
+        chunks.append(text[:end])
+        text = text[end:]
+    return chunks
+
+
+def render_custom_emojis(text: str, guild) -> str:
+    """Resolve known guild shortcodes, preserving code spans and existing tokens."""
+    if not guild:
+        return text
+    codes = {}
+    for emoji in getattr(guild, "emojis", []):
+        key = emoji.name.casefold()
+        value = str(emoji)
+        codes[key] = value if key not in codes else None
+    sections = re.split(r"(```[\s\S]*?(?:```|$)|`[^`\n]*`)", text)
+    pattern = re.compile(r"(?<![<\w\\]):([A-Za-z0-9_]{2,32}):(?!\w)")
+    for index in range(0, len(sections), 2):
+        sections[index] = pattern.sub(lambda m: codes.get(m[1].casefold()) or m[0], sections[index])
+    return "".join(sections)
 
 
 def _build_env_context(message: discord.Message, personality: Personality, i18n: Any) -> str:

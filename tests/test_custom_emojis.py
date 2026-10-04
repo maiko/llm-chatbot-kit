@@ -60,3 +60,51 @@ def test_prefix_emoji_list_uses_actual_library_codes(tmp_path):
         await bot.close()
 
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    "input_text,expected",
+    [
+        ("hi :fixture_0: :FIXTURE_1:", "hi <:fixture_0:1000> <a:fixture_1:1001>"),
+        ("missing :blobfail:", "missing :blobfail:"),
+        ("<:fixture_0:1000> <a:fixture_1:1001>", "<:fixture_0:1000> <a:fixture_1:1001>"),
+        ("`:fixture_0:` ```\n:fixture_1:\n``` :fixture_0:", "`:fixture_0:` ```\n:fixture_1:\n``` <:fixture_0:1000>"),
+        (r"\:fixture_0:", r"\:fixture_0:"),
+    ],
+)
+def test_known_shortcodes_render_without_inventing_or_changing_code(input_text, expected):
+    from llm_chatbot.runtime_utils import render_custom_emojis
+
+    assert render_custom_emojis(input_text, SimpleNamespace(emojis=real_emojis())) == expected
+    assert render_custom_emojis(input_text, None) == input_text
+
+
+def test_ambiguous_emoji_names_are_not_guessed_and_tokens_stay_whole():
+    from llm_chatbot.runtime_utils import _chunk_message, render_custom_emojis
+
+    guild = SimpleNamespace(emojis=real_emojis() + real_emojis())
+    assert render_custom_emojis(":fixture_0:", guild) == ":fixture_0:"
+    token = "<a:fixture_1:1001>"
+    text = "x" * 1985 + token + "tail"
+    chunks = _chunk_message(text)
+    assert "".join(chunks) == text and token in chunks[1]
+
+
+def test_runtime_renders_emotes_in_nonstream_response(monkeypatch, tmp_path):
+    from llm_chatbot.discord_bot import build_bot
+    from test_chat_context import context_fixture
+
+    cfg, _, persona, channel, message = context_fixture(monkeypatch, tmp_path)
+
+    async def scenario():
+        bot = build_bot(cfg, persona, stream=False)
+        bot.process_commands = AsyncMock()
+        bot._connection.user = SimpleNamespace(id=555, mentioned_in=lambda m: m.addressed)
+        bot.text_backend.complete = AsyncMock(return_value=("hi :fixture_1:", (1, 1, 0)))
+        m = message("hello", True)
+        m.guild.emojis = real_emojis()
+        await bot.on_message(m)
+        assert channel.send.await_args.args[0] == "hi <a:fixture_1:1001>"
+        await bot.close()
+
+    asyncio.run(scenario())
