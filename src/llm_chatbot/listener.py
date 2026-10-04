@@ -13,6 +13,14 @@ def _now() -> float:
     return time.time()
 
 
+def listening_enabled(persona: Personality, guild_settings: dict) -> bool:
+    """Explicit owner commands override the persona; preserve legacy defaults."""
+    override = guild_settings.get("listen_override")
+    if isinstance(override, bool):
+        return override
+    return bool(persona.listen.enabled or guild_settings.get("listen_enabled"))
+
+
 def _matches_allow_deny(persona: Personality, guild_settings: dict, channel_id: int, channel_name: str | None) -> bool:
     """Check channel allow/deny lists from persona and guild settings."""
     allowed = set((persona.listen.allow_channels or []) + (guild_settings.get("allowed_channels") or []))
@@ -41,7 +49,7 @@ def should_intervene(
     Applies allow/deny lists, cooldowns (channel and per-user), minimal length,
     and simple keyword/laughter cues.
     """
-    if not (persona.listen.enabled or guild_settings.get("listen_enabled")):
+    if not listening_enabled(persona, guild_settings):
         return False, "help"
     if author_is_bot:
         return False, "help"

@@ -123,8 +123,13 @@ uses a normal channel message. A confirmed deleted placeholder allows a fresh se
 
 Set `IMAGE_TOOLS_ENABLED=true` in `BOT_MODE=both` with a configured Chat Completions
 backend that supports standard `tools` and structured `tool_calls`. The default is
-false. Addressed chat turns use one non-streaming completion with `tool_choice=auto`;
+false. Addressed chat turns use one completion with `tool_choice=auto`;
 ordinary text replies still work, and passive listening never receives this tool.
+Streaming is supported: text arrives progressively while tool-name/argument
+fragments stay buffered. Admission waits for a complete stream with a valid finish
+reason and explicit `[DONE]`; truncated, oversized or disconnected tool streams
+never submit an image. There is no second completion after streaming failure.
+`--no-stream` selects the complete-response path instead.
 A model can rewrite an image request and call `generate_image` with `prompt`,
 optional `preset` and `size`. The kit validates these arguments before submitting
 the same queue used by `/imagine`.

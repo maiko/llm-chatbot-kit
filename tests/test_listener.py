@@ -25,3 +25,16 @@ def test_should_intervene_by_trigger_keyword():
     gs = {"listen_enabled": True}
     ok, intent = should_intervene(p, gs, channel_id=1, channel_name="general", author_id=42, author_is_bot=False, content="kappa!!!")
     assert ok is True and intent in ("help", "joke")
+
+
+def test_explicit_listening_override_takes_precedence_and_preserves_legacy_defaults():
+    from llm_chatbot.listener import listening_enabled
+
+    p = _persona()
+    assert listening_enabled(p, {"listen_enabled": False}) is True
+    assert listening_enabled(p, {"listen_enabled": True, "listen_override": False}) is False
+    assert should_intervene(p, {"listen_override": False}, 1, "general", 42, False, "hey?") == (False, "help")
+    p.listen.enabled = False
+    assert listening_enabled(p, {"listen_enabled": True}) is True
+    assert listening_enabled(p, {"listen_override": True}) is True
+    assert listening_enabled(p, {"listen_override": False}) is False

@@ -60,11 +60,18 @@ def unique_object(pairs):
 async def complete_with_image_tool(client, feature, conversation, message):
     augmented = conversation + [{"role": "system", "content": tool_guidance(feature.cfg)}]
     response, usage = await client.complete_message(augmented, [image_tool(feature.cfg)])
-    calls = response.get("tool_calls")
-    if not calls:
+    receipt = await image_tool_receipt(feature, response, message)
+    if receipt is None:
         if not isinstance(response.get("content"), str):
             raise RuntimeError("text_backend_unexpected_response")
         return response["content"], usage
+    return receipt, usage
+
+
+async def image_tool_receipt(feature, response, message):
+    calls = response.get("tool_calls")
+    if not calls:
+        return None
     try:
         if not isinstance(calls, list) or len(calls) != 1:
             raise ImageError("invalid_tool_call")
@@ -77,6 +84,91 @@ async def complete_with_image_tool(client, feature, conversation, message):
             raise ImageError("invalid_tool_arguments")
         job = await feature.from_message(message, json.loads(arguments, object_pairs_hook=unique_object))
         # Deterministic receipt: no follow-up inference, fabricated success or recursive tool loop.
-        return render_status(job, feature.store.queue_snapshot(job["id"])), usage
+        return render_status(job, feature.store.queue_snapshot(job["id"]))
     except (ImageError, ValueError, TypeError, AttributeError):
-        return text(feature.language, "error", error="image_tool_request_rejected"), usage
+        return text(feature.language, "error", error="image_tool_request_rejected")
+
+
+class ImageToolStream:
+    """Stream text, buffer tool fragments, then admit only after verified completion."""
+
+    def __init__(self, client, feature, conversation, message):
+        self.usage = (0, 0, 0)
+        self.iterator = self._run(client, feature, conversation, message)
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        return await self.iterator.__anext__()
+
+    async def aclose(self):
+        await self.iterator.aclose()
+
+    async def _run(self, client, feature, conversation, message):
+        augmented = conversation + [{"role": "system", "content": tool_guidance(feature.cfg)}]
+        events = client.events(augmented, [image_tool(feature.cfg)])
+        tool = None
+        finish = None
+        had_text = False
+        try:
+            async for event in events:
+                usage = event.get("usage")
+                if usage:
+                    self.usage = (int(usage.get("prompt_tokens", 0)), int(usage.get("completion_tokens", 0)), 0)
+                choices = event.get("choices", [])
+                if not isinstance(choices, list) or len(choices) > 1:
+                    raise RuntimeError("text_backend_unexpected_response")
+                if finish is not None and choices:
+                    # Some proxies attach usage to an empty choice instead of choices=[].
+                    if not usage or any(
+                        choice.get("index", 0) != 0
+                        or choice.get("finish_reason") not in {None, finish}
+                        or any((choice.get("delta") or {}).values())
+                        for choice in choices
+                    ):
+                        raise RuntimeError("text_backend_data_after_finish")
+                    continue
+                for choice in choices:
+                    if choice.get("index", 0) != 0:
+                        raise RuntimeError("text_backend_unexpected_response")
+                    if choice.get("finish_reason") is not None:
+                        finish = choice["finish_reason"]
+                        if finish not in {"stop", "tool_calls"}:
+                            raise RuntimeError("text_backend_response_truncated")
+                    delta = choice.get("delta", {})
+                    content = delta.get("content")
+                    if content:
+                        if not isinstance(content, str):
+                            raise RuntimeError("text_backend_unexpected_response")
+                        had_text = True
+                        yield content
+                    calls = delta.get("tool_calls", [])
+                    if not isinstance(calls, list) or len(calls) > 1:
+                        raise RuntimeError("image_tool_invalid_stream")
+                    for fragment in calls:
+                        if type(fragment.get("index")) is not int or fragment["index"] != 0:
+                            raise RuntimeError("image_tool_invalid_stream")
+                        if fragment.get("type", "function") != "function":
+                            raise RuntimeError("image_tool_invalid_stream")
+                        if tool is None:
+                            tool = {"type": "function", "function": {"name": "", "arguments": ""}}
+                        function = fragment.get("function", {})
+                        for key, limit in (("name", 64), ("arguments", 16000)):
+                            value = function.get(key)
+                            if value is not None:
+                                if not isinstance(value, str):
+                                    raise RuntimeError("image_tool_invalid_stream")
+                                tool["function"][key] += value
+                                if len(tool["function"][key]) > limit:
+                                    raise RuntimeError("image_tool_stream_too_large")
+        finally:
+            # Also release the connection/lock when Discord output is cancelled or rate-limited.
+            await events.aclose()
+        if finish not in {"stop", "tool_calls"}:
+            raise RuntimeError("text_backend_stream_incomplete")
+        if tool:
+            receipt = await image_tool_receipt(feature, {"tool_calls": [tool]}, message)
+            yield ("\n" if had_text else "") + receipt
+        elif finish == "tool_calls" or not had_text:
+            raise RuntimeError("text_backend_unexpected_response")

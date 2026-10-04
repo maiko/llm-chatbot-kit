@@ -856,7 +856,7 @@ def test_image_guidance_file_is_explicit_bounded_configuration(monkeypatch, tmp_
         ImageConfig.from_env()
 
 
-def test_runtime_conversational_image_tool_submits_without_stream_or_cloud(monkeypatch, tmp_path):
+def test_runtime_non_stream_conversational_image_tool_submits_without_cloud(monkeypatch, tmp_path):
     image_env(monkeypatch, tmp_path)
     for name, value in {
         "BOT_MODE": "both",
@@ -871,7 +871,7 @@ def test_runtime_conversational_image_tool_submits_without_stream_or_cloud(monke
     from llm_chatbot.personality import load_personality
 
     async def scenario():
-        bot = build_bot(load_config(), load_personality("examples/local-bot.yml"), stream=True)
+        bot = build_bot(load_config(), load_personality("examples/local-bot.yml"), stream=False)
         bot.process_commands = AsyncMock()
         bot._connection.user = SimpleNamespace(id=555, mentioned_in=lambda _: True)
         bot.text_backend.complete_message = AsyncMock(return_value=(tool_response(), (5, 2, 0)))
@@ -907,5 +907,285 @@ def test_optional_readiness_marker_tracks_connection_lifecycle(monkeypatch, tmp_
         assert marker.exists()
         await bot.close()
         assert not marker.exists()
+
+    asyncio.run(scenario())
+
+
+def test_owner_listen_commands_override_persona_and_status_reports_effective_state(tmp_path):
+    from llm_chatbot.listener import listening_enabled
+
+    async def scenario():
+        bot = commands.Bot(command_prefix="!", intents=discord.Intents.none())
+        cfg = Config("", "", "text-model", None, "42", "!", 20, tmp_path / "context.json")
+        store = MemoryStore(cfg.store_path)
+        persona = replace(DEFAULT_PERSONALITY)
+        persona.listen = replace(DEFAULT_PERSONALITY.listen, enabled=True)
+        register_commands(bot, store, cfg, load_i18n("en"), persona, "!")
+        ctx = SimpleNamespace(author=SimpleNamespace(id=42), guild=SimpleNamespace(id=1), send=AsyncMock())
+        assert listening_enabled(persona, store.guild_settings(1))
+        await bot.get_command("listen off").callback(ctx)
+        assert not listening_enabled(persona, store.guild_settings(1))
+        await bot.get_command("listen status").callback(ctx)
+        assert "False" in ctx.send.await_args.args[0]
+        reloaded = MemoryStore(cfg.store_path)
+        assert reloaded.guild_settings(1)["listen_override"] is False
+        await bot.get_command("listen on").callback(ctx)
+        assert listening_enabled(persona, store.guild_settings(1))
+        await bot.close()
+
+    asyncio.run(scenario())
+
+
+def test_configured_listening_judge_respects_persona_context_limit(monkeypatch, tmp_path):
+    image_env(monkeypatch, tmp_path)
+    for name, value in {
+        "BOT_MODE": "both",
+        "TEXT_API_BASE_URL": "https://backend.invalid/v1",
+        "TEXT_API_KEY": "fixture",
+        "TEXT_MODEL": "text-model",
+        "TEXT_GUILD_IDS": "1",
+        "TEXT_CHANNEL_IDS": "2",
+    }.items():
+        monkeypatch.setenv(name, value)
+    import llm_chatbot.discord_bot as runtime
+
+    cfg = load_config()
+    store = MemoryStore(cfg.store_path)
+    store.get(2).messages = [{"role": "user", "content": value} for value in ("old", "recent1", "recent2")]
+    monkeypatch.setattr(runtime, "MemoryStore", lambda _: store)
+    persona = replace(DEFAULT_PERSONALITY)
+    persona.listen = replace(DEFAULT_PERSONALITY.listen, enabled=True, judge_max_context_messages=2)
+
+    async def scenario():
+        bot = build_bot(cfg, persona, stream=False)
+        bot.process_commands = AsyncMock()
+        bot._connection.user = SimpleNamespace(id=555, mentioned_in=lambda _: False)
+        bot.text_backend.judge = AsyncMock(return_value=(False, "help", 0.2))
+        message = tool_message()
+        message.content, message.channel.name = "what do you think?", "fixture"
+        await bot.on_message(message)
+        msgs, _ = bot.text_backend.judge.await_args.args
+        assert [m["content"] for m in msgs] == ["recent1", "recent2", "what do you think?"]
+        await bot.close()
+
+    asyncio.run(scenario())
+
+
+class FixtureSSE(httpx.AsyncByteStream):
+    def __init__(self, frames):
+        self.frames = frames
+
+    async def __aiter__(self):
+        for frame in self.frames:
+            yield frame.encode()
+
+
+def sse_event(delta=None, finish=None, usage=None):
+    choices = [] if usage is not None else [{"index": 0, "delta": delta or {}, "finish_reason": finish}]
+    return "data: " + json.dumps({"choices": choices, "usage": usage}) + "\n\n"
+
+
+def tool_frames():
+    arguments = json.dumps({"prompt": "A lighthouse at sunrise.", "size": "1024x1024"})
+    return [
+        sse_event({"content": "Je prépare l'image. "}),
+        sse_event({"tool_calls": [{"index": 0, "type": "function", "function": {"name": "generate_", "arguments": ""}}]}),
+        sse_event({"tool_calls": [{"index": 0, "function": {"name": "image", "arguments": arguments[:14]}}]}),
+        sse_event({"tool_calls": [{"index": 0, "function": {"arguments": arguments[14:]}}]}),
+        sse_event(finish="tool_calls"),
+        sse_event(usage={"prompt_tokens": 10, "completion_tokens": 20}),
+        "data: [DONE]\n\n",
+    ]
+
+
+@pytest.mark.parametrize("proxy_usage_choice", [False, True])
+def test_streamed_image_tool_buffers_fragments_until_complete_and_tracks_usage(tmp_path, proxy_usage_choice):
+    from llm_chatbot.image_commands import ImageCommands
+    from llm_chatbot.image_tools import ImageToolStream
+
+    async def scenario():
+        bot = commands.Bot(command_prefix="!", intents=discord.Intents.none())
+        feature = ImageCommands(bot, settings(tmp_path), "fr")
+        calls = []
+
+        def handler(request):
+            payload = json.loads(request.content)
+            assert payload["stream"] is True and payload["parallel_tool_calls"] is False
+            assert payload["tools"][0]["function"]["name"] == "generate_image"
+            calls.append(payload)
+            frames = tool_frames()
+            if proxy_usage_choice:
+                frames[-2] = (
+                    "data: "
+                    + json.dumps(
+                        {
+                            "choices": [{"index": 0, "delta": {}, "finish_reason": None}],
+                            "usage": {"prompt_tokens": 10, "completion_tokens": 20},
+                        }
+                    )
+                    + "\n\n"
+                )
+            return httpx.Response(200, stream=FixtureSSE(frames))
+
+        client = ChatCompletionsClient("https://backend.invalid/v1", "fixture", "text-model", transport=httpx.MockTransport(handler))
+        stream = ImageToolStream(client, feature, [], tool_message())
+        assert await stream.__anext__() == "Je prépare l'image. "
+        assert feature.store.get("100") is None
+        assert client.lock.locked()
+        tail = [chunk async for chunk in stream]
+        assert len(tail) == 1 and "Position 1/1" in tail[0]
+        assert "generate_image" not in "".join(tail)
+        assert json.loads(feature.store.get("100")["payload"])["prompt"] == "A lighthouse at sunrise."
+        assert stream.usage == (10, 20, 0)
+        assert not client.lock.locked() and len(calls) == 1
+        # Replayed message uses the existing job and status message.
+        stream = ImageToolStream(client, feature, [], tool_message())
+        [chunk async for chunk in stream]
+        assert feature.store.db.execute("SELECT count(*) FROM jobs").fetchone()[0] == 1
+        await client.close()
+        await feature.close()
+        await bot.close()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("failure", ["disconnect", "missing_finish", "length", "multiple", "index", "oversized", "json", "after_finish"])
+def test_incomplete_or_invalid_tool_stream_never_admits_an_image(tmp_path, failure):
+    from llm_chatbot.image_commands import ImageCommands
+    from llm_chatbot.image_tools import ImageToolStream
+
+    async def scenario():
+        bot = commands.Bot(command_prefix="!", intents=discord.Intents.none())
+        feature = ImageCommands(bot, settings(tmp_path), "fr")
+        frames = tool_frames()
+        if failure == "disconnect":
+            frames = frames[:-1]
+        elif failure == "missing_finish":
+            frames.pop(4)
+        elif failure == "length":
+            frames[4] = sse_event(finish="length")
+        elif failure == "multiple":
+            frames[2] = sse_event({"tool_calls": [{"index": 0}, {"index": 1}]})
+        elif failure == "index":
+            frames[2] = sse_event({"tool_calls": [{"index": 1}]})
+        elif failure == "oversized":
+            frames[2] = sse_event({"tool_calls": [{"index": 0, "function": {"arguments": "x" * 16001}}]})
+        elif failure == "json":
+            frames[2] = "data: {broken\n\n"
+        elif failure == "after_finish":
+            frames.insert(5, sse_event({"content": "unexpected late data"}))
+        count = []
+
+        def handler(request):
+            count.append(request)
+            return httpx.Response(200, stream=FixtureSSE(frames))
+
+        client = ChatCompletionsClient("https://backend.invalid/v1", "fixture", "text-model", transport=httpx.MockTransport(handler))
+        stream = ImageToolStream(client, feature, [], tool_message())
+        with pytest.raises((RuntimeError, ValueError)):
+            [chunk async for chunk in stream]
+        await stream.aclose()
+        assert feature.store.get("100") is None and not client.lock.locked() and len(count) == 1
+        await client.close()
+        await feature.close()
+        await bot.close()
+
+    asyncio.run(scenario())
+
+
+def test_closing_tool_stream_after_first_text_releases_lock_without_admission(tmp_path):
+    from llm_chatbot.image_commands import ImageCommands
+    from llm_chatbot.image_tools import ImageToolStream
+
+    async def scenario():
+        bot = commands.Bot(command_prefix="!", intents=discord.Intents.none())
+        feature = ImageCommands(bot, settings(tmp_path), "fr")
+        client = ChatCompletionsClient(
+            "https://backend.invalid/v1",
+            "fixture",
+            "text-model",
+            transport=httpx.MockTransport(lambda _: httpx.Response(200, stream=FixtureSSE(tool_frames()))),
+        )
+        stream = ImageToolStream(client, feature, [], tool_message())
+        await stream.__anext__()
+        assert client.lock.locked()
+        await stream.aclose()
+        assert not client.lock.locked() and feature.store.get("100") is None
+        await client.close()
+        await feature.close()
+        await bot.close()
+
+    asyncio.run(scenario())
+
+
+def test_tool_stream_delivers_normal_text_progressively_without_admitting_image(tmp_path):
+    from llm_chatbot.image_commands import ImageCommands
+    from llm_chatbot.image_tools import ImageToolStream
+
+    async def scenario():
+        bot = commands.Bot(command_prefix="!", intents=discord.Intents.none())
+        feature = ImageCommands(bot, settings(tmp_path), "fr")
+        frames = [sse_event({"content": "bonjour "}), sse_event({"content": "à tous"}), sse_event(finish="stop"), "data: [DONE]\n\n"]
+        client = ChatCompletionsClient(
+            "https://backend.invalid/v1",
+            "fixture",
+            "text-model",
+            transport=httpx.MockTransport(lambda _: httpx.Response(200, stream=FixtureSSE(frames))),
+        )
+        stream = ImageToolStream(client, feature, [], tool_message())
+        assert await stream.__anext__() == "bonjour "
+        assert [chunk async for chunk in stream] == ["à tous"]
+        assert feature.store.get("100") is None
+        await client.close()
+        await feature.close()
+        await bot.close()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("failure", [False, True])
+def test_runtime_streaming_image_tool_has_no_non_stream_fallback(monkeypatch, tmp_path, failure):
+    image_env(monkeypatch, tmp_path)
+    for name, value in {
+        "BOT_MODE": "both",
+        "TEXT_API_BASE_URL": "https://backend.invalid/v1",
+        "TEXT_API_KEY": "fixture",
+        "TEXT_MODEL": "text-model",
+        "TEXT_GUILD_IDS": "1",
+        "TEXT_CHANNEL_IDS": "2",
+        "IMAGE_TOOLS_ENABLED": "true",
+    }.items():
+        monkeypatch.setenv(name, value)
+    import llm_chatbot.discord_bot as runtime
+    from llm_chatbot.personality import load_personality
+
+    async def scenario():
+        bot = build_bot(load_config(), load_personality("examples/local-bot.yml"), stream=True)
+        bot.process_commands = AsyncMock()
+        bot._connection.user = SimpleNamespace(id=555, mentioned_in=lambda _: True)
+        bot.text_backend.complete_message = AsyncMock(side_effect=AssertionError("no non-stream retry"))
+        frames = tool_frames()[:-1] if failure else tool_frames()
+        await bot.text_backend.http.aclose()
+        calls = []
+
+        def handler(request):
+            calls.append(request)
+            return httpx.Response(200, stream=FixtureSSE(frames))
+
+        bot.text_backend.http = httpx.AsyncClient(base_url="https://backend.invalid/v1/", transport=httpx.MockTransport(handler))
+
+        async def consume(channel, iterator, **kwargs):
+            return "".join([chunk async for chunk in iterator])
+
+        monkeypatch.setattr(runtime, "send_stream_as_messages", consume)
+        message = tool_message()
+        message.content = "draw a lighthouse"
+        message.author.display_name = "member"
+        message.guild.name, message.guild.members, message.guild.emojis = "fixture", [], []
+        await bot.on_message(message)
+        assert bool(bot.images.store.get("100")) is not failure
+        assert len(calls) == 1 and not bot.text_backend.lock.locked()
+        bot.text_backend.complete_message.assert_not_called()
+        await bot.close()
 
     asyncio.run(scenario())

@@ -9,6 +9,7 @@ from discord.ext import commands
 
 from .config import Config
 from .costs import rollover_if_needed
+from .listener import listening_enabled
 from .memory import MemoryStore
 from .personality import Personality
 from .runtime_utils import _chunk_message
@@ -62,6 +63,7 @@ def register_commands(
             return
         gs = store.guild_settings(ctx_cmd.guild.id)
         gs["listen_enabled"] = True
+        gs["listen_override"] = True
         store.save()
         await ctx_cmd.send(i18n.t("listen_enabled_on"))
 
@@ -75,6 +77,7 @@ def register_commands(
             return
         gs = store.guild_settings(ctx_cmd.guild.id)
         gs["listen_enabled"] = False
+        gs["listen_override"] = False
         store.save()
         await ctx_cmd.send(i18n.t("listen_enabled_off"))
 
@@ -89,7 +92,7 @@ def register_commands(
         await ctx_cmd.send(
             i18n.t(
                 "listen_status",
-                enabled=str(gs.get("listen_enabled", False)),
+                enabled=str(listening_enabled(personality, gs)),
                 denied=", ".join(map(str, denied)) or "-",
                 model=cfg.openai_model,
                 reasoning=reasoning,

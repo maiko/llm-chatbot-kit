@@ -313,7 +313,8 @@ def build_bot(cfg: Config, personality: Personality, *, stream: bool = True) -> 
                     return
                 # Local listening uses the same configured model, never a provider escalation.
                 if personality.listen.judge_enabled and bot.text_backend:
-                    judge_msgs = store.get(message.channel.id).messages[-10:] + [{"role": "user", "content": content}]
+                    judge_limit = max(1, min(50, personality.listen.judge_max_context_messages))
+                    judge_msgs = store.get(message.channel.id).messages[-judge_limit:] + [{"role": "user", "content": content}]
                     accepted, j_intent, conf = await bot.text_backend.judge(judge_msgs, personality.listen.judge_threshold)
                     if not accepted:
                         return
@@ -495,15 +496,19 @@ def build_bot(cfg: Config, personality: Personality, *, stream: bool = True) -> 
         # Stream (default) or non-stream path
         input_tokens = output_tokens = cached_tokens = 0
         use_image_tool = bool(cfg.image_tools_enabled and primary_trigger and not intervened)
-        use_stream = stream and not use_image_tool
+        use_stream = stream
         # Select model and parameters (allow override for interventions)
         gen_model, reasoning, verbosity = _effective_model_and_params(cfg.openai_model, intervened, personality, cfg.openai_verbosity)
         if use_stream:
             try:
-                deltas = (
-                    bot.text_backend.deltas(convo)
-                    if bot.text_backend
-                    else await stream_deltas(
+                if use_image_tool:
+                    from .image_tools import ImageToolStream
+
+                    deltas = ImageToolStream(bot.text_backend, bot.images, convo, message)
+                elif bot.text_backend:
+                    deltas = bot.text_backend.deltas(convo)
+                else:
+                    deltas = await stream_deltas(
                         cfg.openai_api_key,
                         gen_model,
                         input_items,
@@ -511,21 +516,24 @@ def build_bot(cfg: Config, personality: Personality, *, stream: bool = True) -> 
                         verbosity=verbosity,
                         truncation=effective_truncation,
                     )
-                )
                 logger.info("generate: streaming model=%s", gen_model)
                 # Allow user mentions (to interact with others), block roles/everyone; strip only self-mention token
                 no_pings = discord.AllowedMentions(everyone=False, users=True, roles=False, replied_user=False)
-                final_text = await send_stream_as_messages(
-                    message.channel,
-                    deltas,
-                    rate_hz=personality.stream_rate_hz,
-                    min_first=personality.stream_min_first,
-                    min_next=personality.stream_min_next,
-                    strip_leading=[f"<@{bot.user.id}>", f"<@!{bot.user.id}>"] if bot.user else None,
-                    allowed_mentions=no_pings,
-                    max_total_chars=(personality.listen.response_max_chars if intervened else None),
-                    send_gate=send_gate,
-                )
+                try:
+                    final_text = await send_stream_as_messages(
+                        message.channel,
+                        deltas,
+                        rate_hz=personality.stream_rate_hz,
+                        min_first=personality.stream_min_first,
+                        min_next=personality.stream_min_next,
+                        strip_leading=[f"<@{bot.user.id}>", f"<@!{bot.user.id}>"] if bot.user else None,
+                        allowed_mentions=no_pings,
+                        max_total_chars=(personality.listen.response_max_chars if intervened else None),
+                        send_gate=send_gate,
+                    )
+                finally:
+                    if hasattr(deltas, "aclose"):
+                        await deltas.aclose()
                 # Capture usage if available
                 if getattr(deltas, "usage", None):
                     input_tokens, output_tokens, cached_tokens = deltas.usage  # type: ignore
