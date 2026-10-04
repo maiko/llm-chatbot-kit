@@ -106,7 +106,7 @@ class ImageConfig:
             raise ValueError("IMAGE_API_BASE_URL must be an HTTP(S) base URL without credentials/query/fragment")
         if not cfg.api_key or not cfg.guild_ids or not cfg.channel_ids:
             raise ValueError("IMAGE_API_KEY, IMAGE_GUILD_IDS and IMAGE_CHANNEL_IDS are required")
-        if min(cfg.queue_limit, cfg.daily_limit) < 1 or cfg.retention_hours < 24 or not 30 <= cfg.timeout <= 3600:
+        if cfg.queue_limit < 1 or cfg.daily_limit < 0 or cfg.retention_hours < 24 or not 30 <= cfg.timeout <= 3600:
             raise ValueError("Invalid image queue, quota, retention or timeout")
         if any(value <= 0 for value in cfg.guild_ids | cfg.channel_ids | cfg.role_ids):
             raise ValueError("Discord IDs must be positive")

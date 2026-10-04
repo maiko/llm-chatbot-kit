@@ -764,7 +764,7 @@ def test_image_tool_uses_requester_and_durable_queue_without_followup(tmp_path):
         message.channel.send.assert_awaited_once()
         message.id = 101
         receipt, _ = await complete_with_image_tool(client, feature, [], message)
-        assert "refusée" in receipt
+        assert "Génération non lancée" in receipt
         assert feature.store.get("101") is None
         await feature.close()
         await bot.close()
@@ -810,7 +810,7 @@ def test_image_tool_rejects_invalid_calls_and_access_before_admission(tmp_path, 
             message.author.bot = True
         client = SimpleNamespace(complete_message=AsyncMock(return_value=(response, (0, 0, 0))))
         receipt, _ = await complete_with_image_tool(client, feature, [], message)
-        assert "refusée" in receipt
+        assert "Génération non lancée" in receipt
         assert feature.store.db.execute("SELECT count(*) FROM jobs").fetchone()[0] == 0
         message.channel.send.assert_not_called()
         await feature.close()
