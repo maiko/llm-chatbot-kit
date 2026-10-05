@@ -64,7 +64,7 @@ Configured text output budgets are `TEXT_MAX_TOKENS=1024` and
 `TEXT_TOOL_MAX_TOKENS=4096`; `TEXT_TIMEOUT_SECONDS=300` allows slower tool-capable
 backends to finish. They are bounded startup settings, independent of persona
 reply length. A backend `finish_reason=length` produces a readable output-limit
-error: incomplete tool calls are discarded and inference is never retried.
+error: incomplete tool calls are discarded and truncated or ambiguous inference is never retried.
 
 `TEXT_QUEUE_LIMIT` defaults to 20 pending replies (1–100), plus one active reply;
 a full queue receives an explicit retry notice.
@@ -206,8 +206,15 @@ uses a normal channel message. A confirmed deleted placeholder allows a fresh se
 
 Set `IMAGE_TOOLS_ENABLED=true` in `BOT_MODE=both` with a configured Chat Completions
 backend that supports standard `tools` and structured `tool_calls`. The default is
-false. Addressed chat turns use one completion with `tool_choice=auto`;
+false. Addressed chat turns normally use one completion with `tool_choice=auto`;
 ordinary text replies still work, and passive listening never receives this tool.
+In non-stream mode, a completed response that prints an image tool envelope in
+plain text receives one format-correction completion before any admission. The
+kit does not execute arguments extracted from text. A second malformed response
+returns a readable error; timeouts, truncation, existing structured calls and
+admission failures are never retried. Code examples are left as text. The repair
+can still ask a clarification or answer normally rather than force a generation.
+Both completions count toward usage.
 Streaming is supported: text arrives progressively while tool-name/argument
 fragments stay buffered. Admission waits for a complete stream with a valid finish
 reason and explicit `[DONE]`; truncated, oversized or disconnected tool streams
@@ -229,7 +236,7 @@ Conversational tool rejections report a readable validation/access/queue/quota
 reason. Logs contain only trusted error codes and exception types, never tool
 arguments or prompts. Rejections do not retry a generation.
 Discord message IDs make admission idempotent. A deterministic queue receipt is
-returned after submission; no second completion or recursive tool loop runs.
+returned after submission; no completion after admission or recursive tool loop runs.
 The model decides whether the current user asked for an image, so enable the feature
 only with a backend qualified for this behavior. It grants no access to shell,
 files, arbitrary URLs or other Discord destinations.
