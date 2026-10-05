@@ -34,13 +34,41 @@ def _chunk_message(text: str, limit: int = 1990) -> list[str]:
     while text:
         end = min(len(text), limit)
         if end < len(text):
-            for token in re.finditer(r"<a?:[A-Za-z0-9_]+:[0-9]+>", text):
+            for token in re.finditer(r"<(?:a?:[A-Za-z0-9_]+:[0-9]+|@!?[0-9]+)>", text):
                 if token.start() < end < token.end():
                     end = token.start() or end
                     break
         chunks.append(text[:end])
         text = text[end:]
     return chunks
+
+
+def _outside_code(text: str, render) -> str:
+    sections = re.split(r"(```[\s\S]*?(?:```|$)|`[^`\n]*`)", text)
+    return "".join(section if index % 2 else render(section) for index, section in enumerate(sections))
+
+
+def repair_truncated_mentions(text: str, message) -> str:
+    """Restore up to two omitted digits only when exactly one known member matches."""
+    members = list(getattr(getattr(message, "guild", None), "members", []))
+    members += list(getattr(message, "mentions", []))
+    members.append(message.author)
+    known = {str(m.id) for m in members if getattr(m, "id", None)}
+
+    def repair(match):
+        identifier = match["id"]
+        if identifier in known:
+            return match[0]
+        candidates = []
+        for candidate in known:
+            if 1 <= len(candidate) - len(identifier) <= 2:
+                digits = iter(candidate)
+                if all(digit in digits for digit in identifier):
+                    candidates.append(candidate)
+        return f"<@{candidates[0]}>" if len(candidates) == 1 else match[0]
+
+    pattern = re.compile(r"(?<!\\)<@!?(?P<id>[0-9]{15,20})>")
+    return _outside_code(text, lambda section: pattern.sub(repair, section))
 
 
 def render_custom_emojis(text: str, guild) -> str:
@@ -54,21 +82,20 @@ def render_custom_emojis(text: str, guild) -> str:
         value = str(emoji)
         codes[key] = value if key not in codes else None
         ids[str(emoji.id)] = value
-    sections = re.split(r"(```[\s\S]*?(?:```|$)|`[^`\n]*`)", text)
     # Prefer the authoritative ID; a unique exact name also repairs invented or
     # truncated IDs. Leave unknown and ambiguous names untouched.
     pattern = re.compile(
-        r"\\?<(?:(?:a)?:)?(?P<name>[A-Za-z0-9_]{2,32}):(?P<id>[0-9]+)>|(?<![<\w\\]):(?P<shortcode>[A-Za-z0-9_]{2,32}):(?!\w)"
+        r"\\?<(?:(?:a)?:)?(?P<name>[A-Za-z0-9_]{2,32}):(?P<id>[0-9]*)>"
+        r"|\\?<a?:(?P<bare_name>[A-Za-z0-9_]{2,32})>"
+        r"|(?<![<\w\\]):(?P<shortcode>[A-Za-z0-9_]{2,32}):(?!\w)"
     )
 
     def render(match):
-        if match["id"] is not None:
+        if match["name"] is not None:
             return ids.get(match["id"]) or codes.get(match["name"].casefold()) or match[0]
-        return codes.get(match["shortcode"].casefold()) or match[0]
+        return codes.get((match["bare_name"] or match["shortcode"]).casefold()) or match[0]
 
-    for index in range(0, len(sections), 2):
-        sections[index] = pattern.sub(render, sections[index])
-    return "".join(sections)
+    return _outside_code(text, lambda section: pattern.sub(render, section))
 
 
 def _build_env_context(message: discord.Message, personality: Personality, i18n: Any) -> str:
