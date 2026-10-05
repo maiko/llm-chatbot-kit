@@ -100,7 +100,7 @@ def test_runtime_renders_emotes_in_nonstream_response(monkeypatch, tmp_path):
         bot = build_bot(cfg, persona, stream=False)
         bot.process_commands = AsyncMock()
         bot._connection.user = SimpleNamespace(id=555, mentioned_in=lambda m: m.addressed)
-        bot.text_backend.complete = AsyncMock(return_value=("hi :fixture_1:", (1, 1, 0)))
+        bot.text_backend.complete = AsyncMock(return_value=("hi <fixture_1:1001>", (1, 1, 0)))
         m = message("hello", True)
         m.guild.emojis = real_emojis()
         await bot.on_message(m)
@@ -108,3 +108,27 @@ def test_runtime_renders_emotes_in_nonstream_response(monkeypatch, tmp_path):
         await bot.close()
 
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    "input_text,expected",
+    [
+        ("hi <fixture_0:1000> <fixture_1:1001>", "hi <:fixture_0:1000> <a:fixture_1:1001>"),
+        ("<a:fixture_0:1000> <:fixture_1:1001>", "<:fixture_0:1000> <a:fixture_1:1001>"),
+        ("<wrong_name:1000> <a:WRONG_NAME:1001>", "<:fixture_0:1000> <a:fixture_1:1001>"),
+        (r"\<fixture_0:1000> \<:fixture_1:1001>", "<:fixture_0:1000> <a:fixture_1:1001>"),
+        ("<fixture_0:9999> <:fixture_1:9999> <missing:9999>", "<fixture_0:9999> <:fixture_1:9999> <missing:9999>"),
+        (
+            "`<fixture_0:1000>` ```\n<fixture_1:1001>\n``` <fixture_0:1000>",
+            "`<fixture_0:1000>` ```\n<fixture_1:1001>\n``` <:fixture_0:1000>",
+        ),
+        ("<fixture_0:1000>:fixture_1:", "<:fixture_0:1000><a:fixture_1:1001>"),
+    ],
+)
+def test_id_tokens_use_actual_guild_metadata_without_guessing(input_text, expected):
+    from llm_chatbot.runtime_utils import render_custom_emojis
+
+    guild = SimpleNamespace(emojis=real_emojis())
+    assert render_custom_emojis(input_text, guild) == expected
+    assert render_custom_emojis(expected, guild) == expected
+    assert render_custom_emojis(input_text, None) == input_text
