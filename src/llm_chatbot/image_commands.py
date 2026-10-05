@@ -57,7 +57,8 @@ class ImageCommands:
         self.store = JobStore(cfg)
         self.status = ImageStatus(bot, self.store)
         self.worker = ImageWorker(self.store, ImageClient(cfg), self.deliver)
-        self.register()
+        if cfg.slash_commands_enabled:
+            self.register()
 
     def allowed(self, interaction: discord.Interaction) -> bool:
         roles = {role.id for role in getattr(interaction.user, "roles", [])}
@@ -478,7 +479,7 @@ class ImageCommands:
                 view = self.quality_view(self.store.get(row["id"]))
                 if view and row["message_id"].isdecimal():
                     self.bot.add_view(view, message_id=int(row["message_id"]))
-        if self.cfg.sync_commands:
+        if self.cfg.slash_commands_enabled and self.cfg.sync_commands:
             for value in sorted(self.cfg.guild_ids):
                 await self.bot.tree.sync(guild=discord.Object(id=value))
         self.status.start()

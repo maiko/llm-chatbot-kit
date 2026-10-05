@@ -37,6 +37,7 @@ class ImageConfig:
     default_mode: str = "quality"
     quality_rerun_enabled: bool = False
     edits_enabled: bool = False
+    slash_commands_enabled: bool = True
 
     def __post_init__(self):
         if not isinstance(self.mode_presets, dict):
@@ -105,6 +106,7 @@ class ImageConfig:
             ca_file=os.getenv("IMAGE_CA_FILE") or None,
             retention_hours=int(os.getenv("IMAGE_RETENTION_HOURS", "24")),
             sync_commands=os.getenv("IMAGE_SYNC_COMMANDS", "false").lower() == "true",
+            slash_commands_enabled=os.getenv("IMAGE_SLASH_COMMANDS_ENABLED", "true").lower() == "true",
             presets=json.loads(os.getenv("IMAGE_PRESETS_JSON", '{"default":{"model":"default"}}')),
             default_preset=os.getenv("IMAGE_DEFAULT_PRESET", "default"),
             mode_presets=json.loads(os.getenv("IMAGE_MODE_PRESETS_JSON", "{}")),

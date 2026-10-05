@@ -270,6 +270,25 @@ def test_image_only_boot_without_openai_privileged_intents_or_command_sync(monke
     asyncio.run(scenario())
 
 
+def test_disabled_image_slash_commands_keep_worker_and_skip_sync(monkeypatch, tmp_path):
+    image_env(monkeypatch, tmp_path)
+    monkeypatch.setenv("IMAGE_SLASH_COMMANDS_ENABLED", "false")
+    monkeypatch.setenv("IMAGE_SYNC_COMMANDS", "true")
+
+    async def scenario():
+        bot = build_bot(load_config(), DEFAULT_PERSONALITY)
+        await bot.__aenter__()
+        assert bot.images.cfg.slash_commands_enabled is False
+        assert bot.tree.get_commands(guild=discord.Object(id=1)) == []
+        bot.tree.sync = AsyncMock()
+        await bot.setup_hook()
+        bot.tree.sync.assert_not_awaited()
+        assert bot.images.worker.task is not None
+        await bot.close()
+
+    asyncio.run(scenario())
+
+
 def test_slash_denial_deferral_and_seed(monkeypatch, tmp_path):
     image_env(monkeypatch, tmp_path)
 
@@ -746,7 +765,12 @@ def test_image_tool_uses_requester_and_durable_queue_without_followup(tmp_path):
 
     async def scenario():
         bot = commands.Bot(command_prefix="!", intents=discord.Intents.none())
-        feature = ImageCommands(bot, settings(tmp_path, include_prompt=True, prompt_guidance="Use complete visual sentences."), "fr")
+        feature = ImageCommands(
+            bot,
+            settings(tmp_path, include_prompt=True, prompt_guidance="Use complete visual sentences.", slash_commands_enabled=False),
+            "fr",
+        )
+        assert bot.tree.get_commands(guild=discord.Object(id=1)) == []
         client = SimpleNamespace(complete_message=AsyncMock(return_value=(tool_response(), (4, 6, 0))))
         message = tool_message()
         receipt, usage = await complete_with_image_tool(client, feature, [{"role": "user", "content": "draw a lighthouse"}], message)
