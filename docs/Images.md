@@ -60,6 +60,12 @@ Mentions, configured word triggers and supported DMs enter a bounded FIFO reply
 queue. The bot adds 📝 while the message is pending or being answered, then removes
 its own reaction after delivery. Grant Add Reactions and Read Message History in
 chat channels. Reaction failures are logged and do not discard a reply.
+Configured text output budgets are `TEXT_MAX_TOKENS=1024` and
+`TEXT_TOOL_MAX_TOKENS=4096`; `TEXT_TIMEOUT_SECONDS=300` allows slower tool-capable
+backends to finish. They are bounded startup settings, independent of persona
+reply length. A backend `finish_reason=length` produces a readable output-limit
+error: incomplete tool calls are discarded and truncated or ambiguous inference is never retried.
+
 `TEXT_QUEUE_LIMIT` defaults to 20 pending replies (1–100), plus one active reply;
 a full queue receives an explicit retry notice.
 
@@ -68,6 +74,15 @@ instead of being rejected; spontaneous interventions are skipped when busy or
 rate limited. Access is checked again before execution and after quota waits.
 Each input snapshot ends at its own event, with preceding queued answers inserted
 beside their questions. Later messages cannot change an earlier queued request.
+
+New conversation records retain the actual Discord author ID/name, message ID and
+UTC creation time. Model input includes those metadata on each retained message
+and explicitly identifies the author/event currently being answered, independently
+of quoted people, mentions or later queued messages. Stored text is preserved.
+For older records, user-message dates can be derived from their Discord message
+IDs; unavailable sender IDs or response dates remain unknown rather than guessed.
+New assistant response timestamps record completion of delivery, including when
+one logical reply spans several Discord messages. Personas are not rewritten.
 
 This text queue lives in memory and is not replayed after a restart. Wait until
 pending replies and image jobs have finished before replacing the bot. Image queue
@@ -112,6 +127,15 @@ then turn it off. Sync is limited to `IMAGE_GUILD_IDS` and runs in `setup_hook`,
 not on reconnect. It writes Discord command state. Invite with `bot` and
 `applications.commands`; grant View Channel, Send Messages (or Send Messages
 in Threads) and Attach Files in the allowed channels. Administrator is unnecessary.
+
+Set `IMAGE_SLASH_COMMANDS_ENABLED=false` for conversational image generation without
+image slash commands (default: `true`). Use `BOT_MODE=both`, a configured
+tool-capable Chat Completions backend and `IMAGE_TOOLS_ENABLED=true`. Image tools,
+the durable queue, progress messages, delivery and quality-rerun buttons stay
+available. Slash registration and synchronization are skipped, even if
+`IMAGE_SYNC_COMMANDS=true`; this avoids overwriting unrelated application commands.
+Previously published image slash commands must be removed explicitly through the
+application's Discord command management; this flag never deletes remote commands.
 
 ## Fast and quality modes
 
@@ -200,8 +224,15 @@ uses a normal channel message. A confirmed deleted placeholder allows a fresh se
 
 Set `IMAGE_TOOLS_ENABLED=true` in `BOT_MODE=both` with a configured Chat Completions
 backend that supports standard `tools` and structured `tool_calls`. The default is
-false. Addressed chat turns use one completion with `tool_choice=auto`;
+false. Addressed chat turns normally use one completion with `tool_choice=auto`;
 ordinary text replies still work, and passive listening never receives this tool.
+In non-stream mode, a completed response that prints an image tool envelope in
+plain text receives one format-correction completion before any admission. The
+kit does not execute arguments extracted from text. A second malformed response
+returns a readable error; timeouts, truncation, existing structured calls and
+admission failures are never retried. Code examples are left as text. The repair
+can still ask a clarification or answer normally rather than force a generation.
+Both completions count toward usage.
 Streaming is supported: text arrives progressively while tool-name/argument
 fragments stay buffered. Admission waits for a complete stream with a valid finish
 reason and explicit `[DONE]`; truncated, oversized or disconnected tool streams
@@ -223,7 +254,7 @@ Conversational tool rejections report a readable validation/access/queue/quota
 reason. Logs contain only trusted error codes and exception types, never tool
 arguments or prompts. Rejections do not retry a generation.
 Discord message IDs make admission idempotent. A deterministic queue receipt is
-returned after submission; no second completion or recursive tool loop runs.
+returned after submission; no completion after admission or recursive tool loop runs.
 The model decides whether the current user asked for an image, so enable the feature
 only with a backend qualified for this behavior. It grants no access to shell,
 files, arbitrary URLs or other Discord destinations.
@@ -294,3 +325,57 @@ model provisioning remain deployment responsibilities.
 Primary contracts: [discord.py interactions](https://discordpy.readthedocs.io/en/stable/interactions/api.html),
 [HTTPX async API](https://www.python-httpx.org/async/),
 [Python 3.12.15 release](https://www.python.org/downloads/release/python-31215/).
+
+## Photos: understanding and editing
+
+Photo features are disabled by default. For conversation, enable
+`TEXT_VISION_ENABLED=true` with a vision-capable Chat Completions backend.
+An addressed message can attach one PNG, JPEG or static WebP, or reply to a
+photo in the same readable channel. The model receives that photo only for this
+event; pixel data and signed attachment URLs are not stored in conversation
+history. Ordinary text and passive interventions keep their existing behavior.
+
+For retouching, enable `IMAGE_EDITS_ENABLED=true` and mark tested presets with
+`"supports_edits":true`. The configured image API must implement authenticated
+multipart `POST /images/edits`, returning the same inline PNG response as
+`/images/generations`. Fields are the validated prompt/model/size/options plus
+one `image` file. Output size follows the normalized source. The kit does not
+fetch model-supplied URLs or images embedded in arbitrary web links.
+
+`/image-edit image:<attachment> prompt:<instruction> [mode:fast|quality]`
+queues a retouch directly, without rewriting through the text model. With
+`IMAGE_TOOLS_ENABLED=true`, combined chat also offers `edit_image` when a source
+photo is present; attach a photo and address the bot with an instruction, or reply
+to a photo while addressing it. Re-register commands after enabling edits.
+The existing permissions, FIFO, status/progress, cancellation and delivery
+recovery apply to edits. Available modes must point to edit-capable presets.
+
+Sources are limited to 8 MiB, 16 megapixels and 8192 pixels per edge. The bot
+strips metadata, normalizes to PNG with at most 1024 pixels per edge (dimensions
+rounded to multiples of 32), and rejects animated or ambiguous multiple photos.
+It only fetches HTTPS Discord attachment CDN URLs, without redirects. Reply
+photos require both member and bot access to the same channel and its history.
+
+Source PNGs are private `0600` files in the existing `0700` image state directory.
+They are deleted on failed/cancelled/uncertain generation and after delivery
+unless quality reruns are enabled. In that case the original source is retained
+for the configured image retention period. A quality rerun uses that original
+source with the retained prompt, seed and dimensions, rather than editing the
+previous result again. Backend upload/output retention must be managed by the
+deployment separately. Qualify vision and edit quality with your actual models
+before enabling these options; accepting multipart or tool calls alone does not
+prove visual understanding or reliable preservation of identity.
+
+When editing is enabled, the default preset and both configured mode mappings
+must support edits; an unused edit-capable preset is insufficient. Known plain-text
+replies bypass photo access checks. Photo normalization runs in two bounded worker
+threads, and cancelled downloads do not release a normalization slot early. Startup
+and cleanup remove orphan snowflake-named source PNGs and temporary source files
+under the exclusive image-store lock. Retained sources still follow job retention.
+
+Conversational image calls accept an optional `summary` (1–160 characters) in the
+user's language. Once admission succeeds, the bot sends a brief acknowledgement
+with the requester display name and summary, then publishes the separate progress
+message. Missing summaries fall back to the first 12 prompt words. Rejected or
+duplicate requests do not publish another acknowledgement; an uncertain transport
+send is never retried automatically.

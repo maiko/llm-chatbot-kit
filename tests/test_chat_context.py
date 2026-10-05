@@ -1,5 +1,6 @@
 import asyncio
 from dataclasses import replace
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -41,6 +42,7 @@ def context_fixture(monkeypatch, tmp_path, include_non_addressed=True):
         return SimpleNamespace(
             id=serial,
             content=content,
+            created_at=datetime(2026, 1, 2, 12, serial % 60, tzinfo=timezone.utc),
             addressed=addressed,
             channel=channel,
             guild=guild,
@@ -68,8 +70,8 @@ def test_non_addressed_human_is_recorded_without_reply_then_included_by_setting(
         await bot.on_message(message("what did Alice say?", True, 12))
         convo = bot.text_backend.complete.await_args.args[0]
         contents = [item["content"] for item in convo]
-        assert ("Alice: that joke was awful" in contents) is include
-        assert contents.count("Bob: what did Alice say?") == 1
+        assert any(v.endswith("Alice: that joke was awful") for v in contents) is include
+        assert sum(v.endswith("Bob: what did Alice say?") for v in contents) == 1
         assert store.get(2).turns == 1
         await bot.close()
 
@@ -101,9 +103,9 @@ def test_messages_during_inference_are_kept_for_next_turn_without_changing_curre
         channel.send.assert_not_awaited()
         release.set()
         await task
-        assert "Alice: a comment during inference" not in [item["content"] for item in inputs[0]]
+        assert not any(item["content"].endswith("Alice: a comment during inference") for item in inputs[0])
         await bot.on_message(message("what was that comment?", True, 12))
-        assert "Alice: a comment during inference" in [item["content"] for item in inputs[1]]
+        assert any(item["content"].endswith("Alice: a comment during inference") for item in inputs[1])
         await bot.close()
 
     asyncio.run(scenario())
@@ -172,9 +174,14 @@ def test_addressed_messages_queue_with_previous_answer_and_without_future_inputs
         assert not two.done() and len(inputs) == 1
         release.set()
         await asyncio.gather(one, two)
-        assert "Alice: first" in inputs[1] and "answer 1" in inputs[1]
-        assert inputs[1].index("answer 1") < inputs[1].index("Bob: second")
-        assert "Alice: future comment" not in inputs[1]
+        bodies = inputs[1]
+        assert "Alice: first" in bodies and "answer 1" in bodies
+        assert bodies.index("answer 1") < bodies.index("Bob: second")
+        assert "Alice: future comment" not in bodies
+        system = inputs[1][-1]
+        assert '"author_mention": "<@12>"' in system
+        assert '"message_id": "102"' in system
+        assert '"created_at": "2026-01-02T12:42:00+00:00"' in system
         assert [item["content"] for item in store.get(2).messages] == [
             "Alice: first",
             "answer 1",
@@ -219,6 +226,29 @@ def test_queued_reply_rechecks_role_before_inference(monkeypatch, tmp_path):
         release.set()
         await asyncio.gather(one, two)
         assert len(calls) == 1
+        await bot.close()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("requested,expected", [(5, 5), (100, 100), (150, 100)])
+def test_runtime_context_respects_one_hundred_message_window(monkeypatch, tmp_path, requested, expected):
+    cfg, _, persona, _, message = context_fixture(monkeypatch, tmp_path)
+    persona.context = replace(persona.context, include_last_n=requested)
+
+    async def scenario():
+        bot = runtime.build_bot(cfg, persona, stream=False)
+        bot.process_commands = AsyncMock()
+        bot._connection.user = SimpleNamespace(id=555, mentioned_in=lambda m: m.addressed)
+        bot.text_backend.complete = AsyncMock(return_value=("ack", (1, 1, 0)))
+        for index in range(105):
+            await bot.on_message(message(f"observed {index}"))
+        await bot.on_message(message("question", True))
+        conversation = bot.text_backend.complete.await_args.args[0]
+        history = [m["content"] for m in conversation if m["role"] in {"user", "assistant"}]
+        assert len(history) == expected
+        assert history[0].endswith(f"Alice: observed {106 - expected}")
+        assert history[-1].endswith("Alice: question")
         await bot.close()
 
     asyncio.run(scenario())

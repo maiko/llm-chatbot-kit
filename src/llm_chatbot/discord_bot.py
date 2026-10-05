@@ -9,11 +9,13 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+from datetime import datetime, timezone
 from typing import List
 
 import discord
 from discord.ext import commands
 
+from .chat_context import clean_history, current_request_context, history_context, message_metadata, strip_metadata_headers
 from .commands import register_commands
 from .config import Config
 from .costs import rollover_if_needed, usd_cost
@@ -34,6 +36,8 @@ from .runtime_utils import (
     _effective_model_and_params,
     _effective_truncation,
     _maybe_alert_owner,
+    render_custom_emojis,
+    repair_truncated_mentions,
 )
 from .streaming import send_stream_as_messages, stream_deltas
 
@@ -138,6 +142,8 @@ def build_bot(cfg: Config, personality: Personality, *, stream: bool = True) -> 
                 self.images = None
             await super().close()
 
+    if cfg.text_vision_enabled and not (cfg.text_enabled and cfg.text_api_base_url):
+        raise ValueError("TEXT_VISION_ENABLED requires a configured Chat Completions backend")
     bot = KitBot(command_prefix=effective_prefix, intents=intents)
     if cfg.text_enabled and cfg.text_api_base_url:
         from .text_client import ChatCompletionsClient
@@ -146,7 +152,15 @@ def build_bot(cfg: Config, personality: Personality, *, stream: bool = True) -> 
             raise ValueError("TEXT_GUILD_IDS and TEXT_CHANNEL_IDS are required for the configured text backend")
         if not cfg.text_api_key or not cfg.text_api_key.strip():
             raise ValueError("TEXT_API_KEY is required for the configured text backend")
-        bot.text_backend = ChatCompletionsClient(cfg.text_api_base_url, cfg.text_api_key, cfg.openai_model, cfg.text_ca_file)
+        bot.text_backend = ChatCompletionsClient(
+            cfg.text_api_base_url,
+            cfg.text_api_key,
+            cfg.openai_model,
+            cfg.text_ca_file,
+            max_tokens=cfg.text_max_tokens,
+            tool_max_tokens=cfg.text_tool_max_tokens,
+            timeout_seconds=cfg.text_timeout_seconds,
+        )
     store = MemoryStore(cfg.store_path) if cfg.text_enabled else None
     if cfg.image_enabled:
         from .image_commands import ImageCommands
@@ -171,7 +185,7 @@ def build_bot(cfg: Config, personality: Personality, *, stream: bool = True) -> 
         """Remove a leading mention of the bot itself from text (e.g., '<@id>' or '<@!id>')."""
         if not text or not bot.user:
             return text
-        toks = [f"<@{bot.user.id}", f"<@!{bot.user.id}"]
+        toks = [f"<@{bot.user.id}>", f"<@!{bot.user.id}>"]
         out = text
         changed = True
         while changed:
@@ -205,7 +219,7 @@ def build_bot(cfg: Config, personality: Personality, *, stream: bool = True) -> 
 
     @bot.event
     async def on_message(message: discord.Message):
-        if not cfg.text_enabled or message.author.bot or message.webhook_id:
+        if not cfg.text_enabled or message.webhook_id:
             return
 
         if bot.text_backend:
@@ -220,6 +234,17 @@ def build_bot(cfg: Config, personality: Personality, *, stream: bool = True) -> 
 
         is_dm = message.guild is None
         is_mentioned = bot.user and bot.user.mentioned_in(message)
+        peer_message = bool(message.author.bot)
+        mentioned_ids = {member.id for member in getattr(message, "mentions", [])}
+        if peer_message and (
+            not cfg.text_bot_chat_enabled
+            or not message.guild
+            or not bot.user
+            or message.author.id == bot.user.id
+            or message.author.id not in cfg.text_bot_chat_peer_ids
+            or bot.user.id not in mentioned_ids
+        ):
+            return
         content = (message.content or "").strip()
 
         word_triggered = False
@@ -243,7 +268,8 @@ def build_bot(cfg: Config, personality: Personality, *, stream: bool = True) -> 
 
         logger.info("message guild=%s channel=%s author=%s", getattr(message.guild, "id", None), message.channel.id, message.author.id)
 
-        await bot.process_commands(message)
+        if not peer_message:
+            await bot.process_commands(message)
 
         # If this message targets our command prefix, don't treat it as chat input
         if content.startswith(effective_prefix):
@@ -258,13 +284,32 @@ def build_bot(cfg: Config, personality: Personality, *, stream: bool = True) -> 
         if is_dm or (is_mentioned and on_mention_enabled) or word_triggered:
             primary_trigger = True
 
-        # Observing a permitted human message is independent of replying to it.
+        if peer_message and not primary_trigger:
+            return
+        if cfg.text_bot_chat_enabled and message.guild:
+            settings = store.guild_settings(message.guild.id)
+            budgets = settings.setdefault("bot_chat_replies", {})
+            channel_key = str(message.channel.id)
+            if peer_message:
+                used = int(budgets.get(channel_key, 0))
+                if used >= cfg.text_bot_chat_max_replies:
+                    logger.info("bot_chat limit_reached channel=%s", message.channel.id)
+                    return
+                # Reserve synchronously before queue admission. Failures also consume
+                # the budget, so restarts/errors cannot create an unbounded loop.
+                budgets[channel_key] = used + 1
+                store.save()
+            elif mentioned_ids & (cfg.text_bot_chat_peer_ids | ({bot.user.id} if bot.user else set())):
+                budgets[channel_key] = 0
+                store.save()
+
+        # Observing a permitted human or addressed trusted peer is independent of replying.
         # Record before busy/listening/quota gates, without consuming a turn.
         channel_id = message.channel.id
         ctx = store.get(channel_id)
         author_name = getattr(message.author, "display_name", str(message.author.id))
         ctx.messages.append(
-            {"role": "user", "content": f"{author_name}: {content}", "addressed": bool(primary_trigger), "message_id": str(message.id)}
+            {**message_metadata(message), "role": "user", "content": f"{author_name}: {content}", "addressed": bool(primary_trigger)}
         )
         ctx.messages[:] = ctx.messages[-100:]
         store.save()
@@ -459,7 +504,7 @@ def build_bot(cfg: Config, personality: Personality, *, stream: bool = True) -> 
         # Select truncation strategy (per-guild override if present) BEFORE building conversation
         effective_truncation = _effective_truncation(personality, store, message)
         # Append a dynamic reminder in the developer message to avoid self-mentions
-        dev_base = personality.developer_prompt or ""
+        dev_base = (personality.developer_prompt or "") + current_request_context(message, personality.language)
         try:
             if bot.user and getattr(bot.user, "id", None):
                 bot_id = bot.user.id
@@ -495,7 +540,7 @@ def build_bot(cfg: Config, personality: Personality, *, stream: bool = True) -> 
             include_n = int(getattr(personality, "context", None).include_last_n) if getattr(personality, "context", None) else 10
         except Exception:
             include_n = 10
-        HARD_CAP = 50
+        HARD_CAP = 100
         include_n = max(1, min(include_n, HARD_CAP))
         include_non_addr = True
         try:
@@ -552,19 +597,45 @@ def build_bot(cfg: Config, personality: Personality, *, stream: bool = True) -> 
             store.save()
 
         convo = _conversation(
-            history,
+            clean_history(history),
             personality.system_prompt + (env_context or ""),
-            dev_base,
+            history_context(history) + dev_base,
             remaining,
             add_meta=not truncation_active,
         )
 
+        source = None
+        if (
+            primary_trigger
+            and not message.author.bot
+            and bot.text_backend
+            and (cfg.text_vision_enabled or (cfg.image_tools_enabled and bot.images and bot.images.cfg.edits_enabled))
+        ):
+            from .discord_media import resolve_source, with_image
+            from .image_client import ImageError
+            from .image_tools import tool_error
+
+            try:
+                source = await resolve_source(message)
+                if source is not None and cfg.text_vision_enabled:
+                    convo = with_image(convo, source, message.id)
+                if not await text_access(message):
+                    return
+            except ImageError as exc:
+                reply = (
+                    tool_error(personality.language or "en", str(exc))
+                    .replace("Génération non lancée", "Photo non traitée")
+                    .replace("Generation not started", "Photo not processed")
+                )
+                await message.channel.send(reply, allowed_mentions=discord.AllowedMentions.none())
+                return
+
         # Build Responses API typed input items (developer/user/assistant)
-        input_items = _messages_to_responses_payload(convo)
+        input_items = _messages_to_responses_payload(convo) if not bot.text_backend else []
 
         # Stream (default) or non-stream path
         input_tokens = output_tokens = cached_tokens = 0
-        use_image_tool = bool(cfg.image_tools_enabled and primary_trigger and not intervened)
+        use_image_tool = bool(cfg.image_tools_enabled and primary_trigger and not intervened and not message.author.bot)
         use_stream = stream
         # Select model and parameters (allow override for interventions)
         gen_model, reasoning, verbosity = _effective_model_and_params(cfg.openai_model, intervened, personality, cfg.openai_verbosity)
@@ -573,7 +644,7 @@ def build_bot(cfg: Config, personality: Personality, *, stream: bool = True) -> 
                 if use_image_tool:
                     from .image_tools import ImageToolStream
 
-                    deltas = ImageToolStream(bot.text_backend, bot.images, convo, message)
+                    deltas = ImageToolStream(bot.text_backend, bot.images, convo, message, source)
                 elif bot.text_backend:
                     deltas = bot.text_backend.deltas(convo)
                 else:
@@ -609,7 +680,10 @@ def build_bot(cfg: Config, personality: Personality, *, stream: bool = True) -> 
                 logger.warning("generate: streaming failed backend=%s error=%s", "local" if bot.text_backend else "cloud", type(e).__name__)
                 if bot.text_backend:
                     # No second generation after a configured backend streaming failure.
-                    await message.channel.send(i18n.t("generic_error"), allowed_mentions=discord.AllowedMentions.none())
+                    await message.channel.send(
+                        i18n.t("text_response_truncated" if str(e) == "text_backend_response_truncated" else "generic_error"),
+                        allowed_mentions=discord.AllowedMentions.none(),
+                    )
                     return
                 use_stream = False
 
@@ -619,7 +693,7 @@ def build_bot(cfg: Config, personality: Personality, *, stream: bool = True) -> 
                 if use_image_tool:
                     from .image_tools import complete_with_image_tool
 
-                    final_text, usage = await complete_with_image_tool(bot.text_backend, bot.images, convo, message)
+                    final_text, usage = await complete_with_image_tool(bot.text_backend, bot.images, convo, message, source)
                 else:
                     final_text, usage = (
                         await bot.text_backend.complete(convo)
@@ -636,15 +710,19 @@ def build_bot(cfg: Config, personality: Personality, *, stream: bool = True) -> 
                     )
                 input_tokens, output_tokens, cached_tokens = usage
                 # Sanitize leading self-mention; allow user mentions (block roles/everyone)
-                final_text = _strip_leading_self_mention(final_text)
+                final_text = render_custom_emojis(
+                    _strip_leading_self_mention(repair_truncated_mentions(strip_metadata_headers(final_text), message)), message.guild
+                )
                 if intervened and personality.listen.response_max_chars:
                     final_text = final_text[: max(0, int(personality.listen.response_max_chars))]
                 no_pings = discord.AllowedMentions(everyone=False, users=True, roles=False, replied_user=False)
                 for chunk in _chunk_message(final_text):
                     await message.channel.send(chunk, allowed_mentions=no_pings)
             except Exception as e2:
-                logger.exception("generate: non-stream failed error=%s", e2)
-                final_text = i18n.t("generic_error")
+                logger.warning(
+                    "generate: non-stream failed exception=%s truncated=%s", type(e2).__name__, str(e2) == "text_backend_response_truncated"
+                )
+                final_text = i18n.t("text_response_truncated" if str(e2) == "text_backend_response_truncated" else "generic_error")
                 no_pings = discord.AllowedMentions(everyone=False, users=True, roles=False, replied_user=False)
                 await message.channel.send(final_text, allowed_mentions=no_pings)
 
@@ -662,7 +740,15 @@ def build_bot(cfg: Config, personality: Personality, *, stream: bool = True) -> 
         ctx.turns += 1
         # Persist the sanitized final text in memory for context dumps
         final_text = _strip_leading_self_mention(final_text)
-        answer = {"role": "assistant", "content": final_text, "in_reply_to": str(message.id)}
+        answer = {
+            "role": "assistant",
+            "content": final_text,
+            "in_reply_to": str(message.id),
+            "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "author_id": str(bot.user.id) if bot.user else None,
+            "author_name": str(getattr(bot.user, "display_name", "bot")),
+            "author_kind": "bot",
+        }
         index = next((i + 1 for i, item in enumerate(ctx.messages) if item.get("message_id") == str(message.id)), len(ctx.messages))
         ctx.messages.insert(index, answer)
         ctx.messages[:] = ctx.messages[-100:]

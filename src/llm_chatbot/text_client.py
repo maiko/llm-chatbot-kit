@@ -11,7 +11,24 @@ import httpx
 
 
 class ChatCompletionsClient:
-    def __init__(self, base_url: str, api_key: str, model: str, ca_file: str | None = None, transport=None):
+    def __init__(
+        self,
+        base_url: str,
+        api_key: str,
+        model: str,
+        ca_file: str | None = None,
+        transport=None,
+        *,
+        max_tokens: int = 1024,
+        tool_max_tokens: int = 4096,
+        timeout_seconds: int = 300,
+    ):
+        for value in (max_tokens, tool_max_tokens):
+            if type(value) is not int or not 1 <= value <= 16384:
+                raise ValueError("Text output budgets must be integers from 1 to 16384")
+        if type(timeout_seconds) is not int or not 30 <= timeout_seconds <= 600:
+            raise ValueError("Text timeout must be an integer from 30 to 600")
+        self.max_tokens, self.tool_max_tokens = max_tokens, tool_max_tokens
         parts = urlsplit(base_url)
         if parts.scheme not in {"http", "https"} or not parts.netloc or parts.username or parts.password or parts.query or parts.fragment:
             raise ValueError("TEXT_API_BASE_URL must be an HTTP(S) base URL without credentials/query/fragment")
@@ -26,7 +43,7 @@ class ChatCompletionsClient:
             transport=transport,
             trust_env=False,
             follow_redirects=False,
-            timeout=httpx.Timeout(120, connect=10),
+            timeout=httpx.Timeout(timeout_seconds, connect=10),
             limits=httpx.Limits(max_connections=1),
         )
 
@@ -37,7 +54,7 @@ class ChatCompletionsClient:
         return {
             "model": self.model,
             "messages": [{"role": "system", "content": "\n\n".join(systems)}] + history,
-            "max_tokens": 512,
+            "max_tokens": self.max_tokens,
             "temperature": 0.6,
             "stream": stream,
         }
@@ -47,7 +64,7 @@ class ChatCompletionsClient:
             # No automatic fallback/retry: an ambiguous request must not produce another answer.
             payload = self.payload(messages)
             if tools:
-                payload.update(tools=tools, tool_choice="auto", parallel_tool_calls=False, max_tokens=1024)
+                payload.update(tools=tools, tool_choice="auto", parallel_tool_calls=False, max_tokens=self.tool_max_tokens)
             async with self.http.stream("POST", "chat/completions", json=payload) as response:
                 if response.status_code != 200:
                     raise RuntimeError("text_backend_backend_unavailable")
@@ -77,7 +94,7 @@ class ChatCompletionsClient:
         async with self.lock:
             payload = self.payload(messages, stream=True)
             if tools:
-                payload.update(tools=tools, tool_choice="auto", parallel_tool_calls=False, max_tokens=1024)
+                payload.update(tools=tools, tool_choice="auto", parallel_tool_calls=False, max_tokens=self.tool_max_tokens)
                 payload["stream_options"] = {"include_usage": True}
             async with self.http.stream("POST", "chat/completions", json=payload) as response:
                 if response.status_code != 200:

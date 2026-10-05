@@ -270,6 +270,25 @@ def test_image_only_boot_without_openai_privileged_intents_or_command_sync(monke
     asyncio.run(scenario())
 
 
+def test_disabled_image_slash_commands_keep_worker_and_skip_sync(monkeypatch, tmp_path):
+    image_env(monkeypatch, tmp_path)
+    monkeypatch.setenv("IMAGE_SLASH_COMMANDS_ENABLED", "false")
+    monkeypatch.setenv("IMAGE_SYNC_COMMANDS", "true")
+
+    async def scenario():
+        bot = build_bot(load_config(), DEFAULT_PERSONALITY)
+        await bot.__aenter__()
+        assert bot.images.cfg.slash_commands_enabled is False
+        assert bot.tree.get_commands(guild=discord.Object(id=1)) == []
+        bot.tree.sync = AsyncMock()
+        await bot.setup_hook()
+        bot.tree.sync.assert_not_awaited()
+        assert bot.images.worker.task is not None
+        await bot.close()
+
+    asyncio.run(scenario())
+
+
 def test_slash_denial_deferral_and_seed(monkeypatch, tmp_path):
     image_env(monkeypatch, tmp_path)
 
@@ -746,7 +765,12 @@ def test_image_tool_uses_requester_and_durable_queue_without_followup(tmp_path):
 
     async def scenario():
         bot = commands.Bot(command_prefix="!", intents=discord.Intents.none())
-        feature = ImageCommands(bot, settings(tmp_path, include_prompt=True, prompt_guidance="Use complete visual sentences."), "fr")
+        feature = ImageCommands(
+            bot,
+            settings(tmp_path, include_prompt=True, prompt_guidance="Use complete visual sentences.", slash_commands_enabled=False),
+            "fr",
+        )
+        assert bot.tree.get_commands(guild=discord.Object(id=1)) == []
         client = SimpleNamespace(complete_message=AsyncMock(return_value=(tool_response(), (4, 6, 0))))
         message = tool_message()
         receipt, usage = await complete_with_image_tool(client, feature, [{"role": "user", "content": "draw a lighthouse"}], message)
@@ -761,7 +785,7 @@ def test_image_tool_uses_requester_and_durable_queue_without_followup(tmp_path):
         assert tools[0]["function"]["parameters"]["properties"]["preset"]["enum"] == list(TEST_PRESETS)
         await complete_with_image_tool(client, feature, [], message)
         assert feature.store.db.execute("SELECT count(*) FROM jobs").fetchone()[0] == 1
-        message.channel.send.assert_awaited_once()
+        assert message.channel.send.await_count == 2  # Acknowledgement, then separate status.
         message.id = 101
         receipt, _ = await complete_with_image_tool(client, feature, [], message)
         assert "Génération non lancée" in receipt
@@ -886,7 +910,7 @@ def test_runtime_non_stream_conversational_image_tool_submits_without_cloud(monk
         bot.text_backend.complete_message.assert_awaited_once()
         bot.text_backend.deltas.assert_not_called()
         assert "Position 1/1" in message.channel.send.await_args.args[0]
-        message.channel.send.assert_awaited_once()
+        assert message.channel.send.await_count == 2  # Acknowledgement, then separate status.
         await bot.close()
 
     asyncio.run(scenario())
@@ -1197,8 +1221,10 @@ def test_runtime_stream_finishes_image_tool_with_one_event_quota(monkeypatch, tm
     from contextlib import asynccontextmanager
 
     import llm_chatbot.discord_bot as runtime
+    import llm_chatbot.streaming as streaming
     from llm_chatbot.personality import RateLimitDim, load_personality
 
+    monkeypatch.setattr(streaming.random, "random", lambda: 0.0)
     image_env(monkeypatch, tmp_path)
     for name, value in {
         "BOT_MODE": "both",
@@ -1429,6 +1455,72 @@ def test_result_reports_current_generation_instead_of_missing_image(monkeypatch,
         assert "🎨 100" in response.args[0] and "Aucune image" not in response.args[0]
         assert response.kwargs["ephemeral"] and "file" not in response.kwargs
         assert bot.images.store.get("100")["state"] == state
+        await bot.close()
+
+    asyncio.run(scenario())
+
+
+def test_image_tool_acknowledgement_precedes_separate_status_and_is_not_duplicated(tmp_path):
+    async def scenario():
+        bot = commands.Bot(command_prefix="!", intents=discord.Intents.none())
+        from llm_chatbot.image_commands import ImageCommands
+
+        feature = ImageCommands(bot, settings(tmp_path), "fr")
+        message = tool_message()
+        message.author.display_name = "Alice"
+        args = {"prompt": "A calm sunset over the sea.", "summary": "un coucher de soleil"}
+        first = await feature.from_message(message, args)
+        calls = message.channel.send.await_args_list
+        assert len(calls) == 2
+        assert calls[0].args[0] == "Ok je te génère ton image Alice : un coucher de soleil"
+        assert calls[1].args[0].startswith("🎨 100")
+        assert all(call.kwargs["allowed_mentions"].to_dict() == discord.AllowedMentions.none().to_dict() for call in calls)
+        assert feature.worker.wake.is_set()
+        await feature.from_message(message, args)
+        assert message.channel.send.await_count == 2 and first["id"] == "100"
+        # Busy admission must not publish a false acknowledgement.
+        message.id = 101
+        with pytest.raises(ImageError, match="user_busy"):
+            await feature.from_message(message, args)
+        assert message.channel.send.await_count == 2
+        await feature.close()
+        await bot.close()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("summary", ["", "x" * 161, 123])
+def test_invalid_image_summary_never_admitted(tmp_path, summary):
+    async def scenario():
+        bot = commands.Bot(command_prefix="!", intents=discord.Intents.none())
+        from llm_chatbot.image_commands import ImageCommands
+
+        feature = ImageCommands(bot, settings(tmp_path), "fr")
+        message = tool_message()
+        with pytest.raises(ImageError, match="invalid_tool_arguments"):
+            await feature.from_message(message, {"prompt": "sunset", "summary": summary})
+        assert feature.store.get("100") is None
+        message.channel.send.assert_not_awaited()
+        await feature.close()
+        await bot.close()
+
+    asyncio.run(scenario())
+
+
+def test_acknowledgement_failure_keeps_admitted_job_and_status(tmp_path):
+    async def scenario():
+        bot = commands.Bot(command_prefix="!", intents=discord.Intents.none())
+        from llm_chatbot.image_commands import ImageCommands
+
+        feature = ImageCommands(bot, settings(tmp_path), "fr")
+        message = tool_message()
+        message.author.display_name = "@everyone"
+        message.channel.send.side_effect = [RuntimeError("uncertain send"), SimpleNamespace(id=900)]
+        job = await feature.from_message(message, {"prompt": "sunset", "summary": "@everyone \n sunset"})
+        assert job["state"] == "queued" and job["status_message_id"] == "900"
+        assert feature.worker.wake.is_set() and message.channel.send.await_count == 2
+        assert "@everyone" not in message.channel.send.await_args_list[0].args[0]
+        await feature.close()
         await bot.close()
 
     asyncio.run(scenario())
