@@ -222,3 +222,26 @@ def test_queued_reply_rechecks_role_before_inference(monkeypatch, tmp_path):
         await bot.close()
 
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("requested,expected", [(5, 5), (100, 100), (150, 100)])
+def test_runtime_context_respects_one_hundred_message_window(monkeypatch, tmp_path, requested, expected):
+    cfg, _, persona, _, message = context_fixture(monkeypatch, tmp_path)
+    persona.context = replace(persona.context, include_last_n=requested)
+
+    async def scenario():
+        bot = runtime.build_bot(cfg, persona, stream=False)
+        bot.process_commands = AsyncMock()
+        bot._connection.user = SimpleNamespace(id=555, mentioned_in=lambda m: m.addressed)
+        bot.text_backend.complete = AsyncMock(return_value=("ack", (1, 1, 0)))
+        for index in range(105):
+            await bot.on_message(message(f"observed {index}"))
+        await bot.on_message(message("question", True))
+        conversation = bot.text_backend.complete.await_args.args[0]
+        history = [m["content"] for m in conversation if m["role"] in {"user", "assistant"}]
+        assert len(history) == expected
+        assert history[0] == f"Alice: observed {106 - expected}"
+        assert history[-1] == "Alice: question"
+        await bot.close()
+
+    asyncio.run(scenario())

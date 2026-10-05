@@ -506,7 +506,7 @@ def build_bot(cfg: Config, personality: Personality, *, stream: bool = True) -> 
             include_n = int(getattr(personality, "context", None).include_last_n) if getattr(personality, "context", None) else 10
         except Exception:
             include_n = 10
-        HARD_CAP = 50
+        HARD_CAP = 100
         include_n = max(1, min(include_n, HARD_CAP))
         include_non_addr = True
         try:
