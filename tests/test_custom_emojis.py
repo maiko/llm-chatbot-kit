@@ -84,6 +84,7 @@ def test_ambiguous_emoji_names_are_not_guessed_and_tokens_stay_whole():
 
     guild = SimpleNamespace(emojis=real_emojis() + real_emojis())
     assert render_custom_emojis(":fixture_0:", guild) == ":fixture_0:"
+    assert render_custom_emojis("<a:fixture_0:9999>", guild) == "<a:fixture_0:9999>"
     token = "<a:fixture_1:1001>"
     text = "x" * 1985 + token + "tail"
     chunks = _chunk_message(text)
@@ -100,7 +101,7 @@ def test_runtime_renders_emotes_in_nonstream_response(monkeypatch, tmp_path):
         bot = build_bot(cfg, persona, stream=False)
         bot.process_commands = AsyncMock()
         bot._connection.user = SimpleNamespace(id=555, mentioned_in=lambda m: m.addressed)
-        bot.text_backend.complete = AsyncMock(return_value=("hi <fixture_1:1001>", (1, 1, 0)))
+        bot.text_backend.complete = AsyncMock(return_value=("hi <:fixture_1:101>", (1, 1, 0)))
         m = message("hello", True)
         m.guild.emojis = real_emojis()
         await bot.on_message(m)
@@ -117,7 +118,8 @@ def test_runtime_renders_emotes_in_nonstream_response(monkeypatch, tmp_path):
         ("<a:fixture_0:1000> <:fixture_1:1001>", "<:fixture_0:1000> <a:fixture_1:1001>"),
         ("<wrong_name:1000> <a:WRONG_NAME:1001>", "<:fixture_0:1000> <a:fixture_1:1001>"),
         (r"\<fixture_0:1000> \<:fixture_1:1001>", "<:fixture_0:1000> <a:fixture_1:1001>"),
-        ("<fixture_0:9999> <:fixture_1:9999> <missing:9999>", "<fixture_0:9999> <:fixture_1:9999> <missing:9999>"),
+        ("<fixture_0:9999> <:fixture_1:9999> <missing:9999>", "<:fixture_0:1000> <a:fixture_1:1001> <missing:9999>"),
+        ("<a:FIXTURE_0:100> <:fixture_1:100> <missing:1000>", "<:fixture_0:1000> <a:fixture_1:1001> <:fixture_0:1000>"),
         (
             "`<fixture_0:1000>` ```\n<fixture_1:1001>\n``` <fixture_0:1000>",
             "`<fixture_0:1000>` ```\n<fixture_1:1001>\n``` <:fixture_0:1000>",

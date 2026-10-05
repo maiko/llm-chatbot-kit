@@ -25,8 +25,10 @@ Discord setup
 - Invite your bot with appropriate permissions (send messages, read history).
 
 Known custom emoji shortcodes in non-streamed generated replies are resolved to the current
-guild's actual static/animated Discord codes before sending. Unknown or ambiguous
-names stay unchanged; code spans and existing Discord codes are preserved.
+guild's actual static/animated Discord codes before sending. ID-bearing tokens are
+repaired using a known guild ID first, then an exact unambiguous guild name if the
+ID is invalid (for example, truncated). Unknown or ambiguous names stay unchanged;
+code spans and valid Discord codes are preserved.
 
 
 ## Trusted bot conversations

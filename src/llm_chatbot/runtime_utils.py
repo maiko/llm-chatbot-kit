@@ -44,7 +44,7 @@ def _chunk_message(text: str, limit: int = 1990) -> list[str]:
 
 
 def render_custom_emojis(text: str, guild) -> str:
-    """Render guild shortcodes and repair ID-bearing tokens outside code spans."""
+    """Render guild emojis using a known ID or an unambiguous name outside code spans."""
     if not guild:
         return text
     codes = {}
@@ -55,14 +55,16 @@ def render_custom_emojis(text: str, guild) -> str:
         codes[key] = value if key not in codes else None
         ids[str(emoji.id)] = value
     sections = re.split(r"(```[\s\S]*?(?:```|$)|`[^`\n]*`)", text)
-    # Consume unknown angle tokens whole so their inner shortcode is not changed.
-    # The guild ID lookup supplies the canonical name and animated/static prefix.
-    pattern = re.compile(r"\\?<(?:(?:a)?:)?[A-Za-z0-9_]{2,32}:([0-9]+)>|(?<![<\w\\]):([A-Za-z0-9_]{2,32}):(?!\w)")
+    # Prefer the authoritative ID; a unique exact name also repairs invented or
+    # truncated IDs. Leave unknown and ambiguous names untouched.
+    pattern = re.compile(
+        r"\\?<(?:(?:a)?:)?(?P<name>[A-Za-z0-9_]{2,32}):(?P<id>[0-9]+)>|(?<![<\w\\]):(?P<shortcode>[A-Za-z0-9_]{2,32}):(?!\w)"
+    )
 
     def render(match):
-        if match[1] is not None:
-            return ids.get(match[1]) or match[0]
-        return codes.get(match[2].casefold()) or match[0]
+        if match["id"] is not None:
+            return ids.get(match["id"]) or codes.get(match["name"].casefold()) or match[0]
+        return codes.get(match["shortcode"].casefold()) or match[0]
 
     for index in range(0, len(sections), 2):
         sections[index] = pattern.sub(render, sections[index])
