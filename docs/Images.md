@@ -119,6 +119,15 @@ not on reconnect. It writes Discord command state. Invite with `bot` and
 `applications.commands`; grant View Channel, Send Messages (or Send Messages
 in Threads) and Attach Files in the allowed channels. Administrator is unnecessary.
 
+Set `IMAGE_SLASH_COMMANDS_ENABLED=false` for conversational image generation without
+image slash commands (default: `true`). Use `BOT_MODE=both`, a configured
+tool-capable Chat Completions backend and `IMAGE_TOOLS_ENABLED=true`. Image tools,
+the durable queue, progress messages, delivery and quality-rerun buttons stay
+available. Slash registration and synchronization are skipped, even if
+`IMAGE_SYNC_COMMANDS=true`; this avoids overwriting unrelated application commands.
+Previously published image slash commands must be removed explicitly through the
+application's Discord command management; this flag never deletes remote commands.
+
 ## Fast and quality modes
 
 Optionally map two modes to existing presets:
