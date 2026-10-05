@@ -75,6 +75,15 @@ rate limited. Access is checked again before execution and after quota waits.
 Each input snapshot ends at its own event, with preceding queued answers inserted
 beside their questions. Later messages cannot change an earlier queued request.
 
+New conversation records retain the actual Discord author ID/name, message ID and
+UTC creation time. Model input includes those metadata on each retained message
+and explicitly identifies the author/event currently being answered, independently
+of quoted people, mentions or later queued messages. Stored text is preserved.
+For older records, user-message dates can be derived from their Discord message
+IDs; unavailable sender IDs or response dates remain unknown rather than guessed.
+New assistant response timestamps record completion of delivery, including when
+one logical reply spans several Discord messages. Personas are not rewritten.
+
 This text queue lives in memory and is not replayed after a restart. Wait until
 pending replies and image jobs have finished before replacing the bot. Image queue
 persistence and recovery remain independent. `--no-stream` sends complete replies;

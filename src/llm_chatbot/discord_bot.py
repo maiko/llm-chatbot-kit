@@ -9,11 +9,13 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+from datetime import datetime, timezone
 from typing import List
 
 import discord
 from discord.ext import commands
 
+from .chat_context import annotate_history, current_request_context, message_metadata
 from .commands import register_commands
 from .config import Config
 from .costs import rollover_if_needed, usd_cost
@@ -306,7 +308,7 @@ def build_bot(cfg: Config, personality: Personality, *, stream: bool = True) -> 
         ctx = store.get(channel_id)
         author_name = getattr(message.author, "display_name", str(message.author.id))
         ctx.messages.append(
-            {"role": "user", "content": f"{author_name}: {content}", "addressed": bool(primary_trigger), "message_id": str(message.id)}
+            {**message_metadata(message), "role": "user", "content": f"{author_name}: {content}", "addressed": bool(primary_trigger)}
         )
         ctx.messages[:] = ctx.messages[-100:]
         store.save()
@@ -501,7 +503,7 @@ def build_bot(cfg: Config, personality: Personality, *, stream: bool = True) -> 
         # Select truncation strategy (per-guild override if present) BEFORE building conversation
         effective_truncation = _effective_truncation(personality, store, message)
         # Append a dynamic reminder in the developer message to avoid self-mentions
-        dev_base = personality.developer_prompt or ""
+        dev_base = (personality.developer_prompt or "") + current_request_context(message, personality.language)
         try:
             if bot.user and getattr(bot.user, "id", None):
                 bot_id = bot.user.id
@@ -594,7 +596,7 @@ def build_bot(cfg: Config, personality: Personality, *, stream: bool = True) -> 
             store.save()
 
         convo = _conversation(
-            history,
+            annotate_history(history),
             personality.system_prompt + (env_context or ""),
             dev_base,
             remaining,
@@ -735,7 +737,15 @@ def build_bot(cfg: Config, personality: Personality, *, stream: bool = True) -> 
         ctx.turns += 1
         # Persist the sanitized final text in memory for context dumps
         final_text = _strip_leading_self_mention(final_text)
-        answer = {"role": "assistant", "content": final_text, "in_reply_to": str(message.id)}
+        answer = {
+            "role": "assistant",
+            "content": final_text,
+            "in_reply_to": str(message.id),
+            "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "author_id": str(bot.user.id) if bot.user else None,
+            "author_name": str(getattr(bot.user, "display_name", "bot")),
+            "author_kind": "bot",
+        }
         index = next((i + 1 for i, item in enumerate(ctx.messages) if item.get("message_id") == str(message.id)), len(ctx.messages))
         ctx.messages.insert(index, answer)
         ctx.messages[:] = ctx.messages[-100:]
