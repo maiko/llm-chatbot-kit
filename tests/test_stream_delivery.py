@@ -140,3 +140,29 @@ def test_discord_length_splits_preserve_normal_words():
         assert all(chunk.endswith(" ") for chunk in chunks[:-1])
 
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("fragment_size", [1, 13, 4096])
+@pytest.mark.parametrize("cap", [None, 25])
+def test_metadata_never_reaches_any_stream_burst_or_character_cap(monkeypatch, fragment_size, cap):
+    async def sleep(_):
+        pass
+
+    monkeypatch.setattr(asyncio, "sleep", sleep)
+
+    async def scenario():
+        header = '[Discord message metadata: {"author": "name]with\\"quote", "items": [1, 2]}]\n'
+        normal = 'Hello <@11>!\nHere is JSON: {"items": [1, 2]}\nFinal [Disc'
+        raw = header + normal[:13] + header + normal[13:]
+        channel = SimpleNamespace(typing=typing, send=AsyncMock())
+
+        async def deltas():
+            for pos in range(0, len(raw), fragment_size):
+                yield raw[pos : pos + fragment_size]
+
+        result = await send_stream_as_messages(channel, deltas(), min_first=1, min_next=1, rate_hz=1e9, max_total_chars=cap)
+        expected = normal if cap is None else normal[:cap]
+        assert result == expected
+        assert "".join(call.args[0] for call in channel.send.await_args_list) == expected
+
+    asyncio.run(scenario())
