@@ -216,7 +216,7 @@ def build_bot(cfg: Config, personality: Personality, *, stream: bool = True) -> 
 
     @bot.event
     async def on_message(message: discord.Message):
-        if not cfg.text_enabled or message.author.bot or message.webhook_id:
+        if not cfg.text_enabled or message.webhook_id:
             return
 
         if bot.text_backend:
@@ -231,6 +231,17 @@ def build_bot(cfg: Config, personality: Personality, *, stream: bool = True) -> 
 
         is_dm = message.guild is None
         is_mentioned = bot.user and bot.user.mentioned_in(message)
+        peer_message = bool(message.author.bot)
+        mentioned_ids = {member.id for member in getattr(message, "mentions", [])}
+        if peer_message and (
+            not cfg.text_bot_chat_enabled
+            or not message.guild
+            or not bot.user
+            or message.author.id == bot.user.id
+            or message.author.id not in cfg.text_bot_chat_peer_ids
+            or bot.user.id not in mentioned_ids
+        ):
+            return
         content = (message.content or "").strip()
 
         word_triggered = False
@@ -254,7 +265,8 @@ def build_bot(cfg: Config, personality: Personality, *, stream: bool = True) -> 
 
         logger.info("message guild=%s channel=%s author=%s", getattr(message.guild, "id", None), message.channel.id, message.author.id)
 
-        await bot.process_commands(message)
+        if not peer_message:
+            await bot.process_commands(message)
 
         # If this message targets our command prefix, don't treat it as chat input
         if content.startswith(effective_prefix):
@@ -269,7 +281,26 @@ def build_bot(cfg: Config, personality: Personality, *, stream: bool = True) -> 
         if is_dm or (is_mentioned and on_mention_enabled) or word_triggered:
             primary_trigger = True
 
-        # Observing a permitted human message is independent of replying to it.
+        if peer_message and not primary_trigger:
+            return
+        if cfg.text_bot_chat_enabled and message.guild:
+            settings = store.guild_settings(message.guild.id)
+            budgets = settings.setdefault("bot_chat_replies", {})
+            channel_key = str(message.channel.id)
+            if peer_message:
+                used = int(budgets.get(channel_key, 0))
+                if used >= cfg.text_bot_chat_max_replies:
+                    logger.info("bot_chat limit_reached channel=%s", message.channel.id)
+                    return
+                # Reserve synchronously before queue admission. Failures also consume
+                # the budget, so restarts/errors cannot create an unbounded loop.
+                budgets[channel_key] = used + 1
+                store.save()
+            elif mentioned_ids & (cfg.text_bot_chat_peer_ids | ({bot.user.id} if bot.user else set())):
+                budgets[channel_key] = 0
+                store.save()
+
+        # Observing a permitted human or addressed trusted peer is independent of replying.
         # Record before busy/listening/quota gates, without consuming a turn.
         channel_id = message.channel.id
         ctx = store.get(channel_id)
@@ -573,6 +604,7 @@ def build_bot(cfg: Config, personality: Personality, *, stream: bool = True) -> 
         source = None
         if (
             primary_trigger
+            and not message.author.bot
             and bot.text_backend
             and (cfg.text_vision_enabled or (cfg.image_tools_enabled and bot.images and bot.images.cfg.edits_enabled))
         ):
@@ -600,7 +632,7 @@ def build_bot(cfg: Config, personality: Personality, *, stream: bool = True) -> 
 
         # Stream (default) or non-stream path
         input_tokens = output_tokens = cached_tokens = 0
-        use_image_tool = bool(cfg.image_tools_enabled and primary_trigger and not intervened)
+        use_image_tool = bool(cfg.image_tools_enabled and primary_trigger and not intervened and not message.author.bot)
         use_stream = stream
         # Select model and parameters (allow override for interventions)
         gen_model, reasoning, verbosity = _effective_model_and_params(cfg.openai_model, intervened, personality, cfg.openai_verbosity)

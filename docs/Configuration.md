@@ -27,3 +27,23 @@ Discord setup
 Known custom emoji shortcodes in non-streamed generated replies are resolved to the current
 guild's actual static/animated Discord codes before sending. Unknown or ambiguous
 names stay unchanged; code spans and existing Discord codes are preserved.
+
+
+## Trusted bot conversations
+
+Bot-authored messages remain ignored by default. To let selected bots converse,
+configure each instance with:
+
+- `TEXT_BOT_CHAT_ENABLED=true` (default false).
+- `TEXT_BOT_CHAT_PEER_IDS`: comma-separated trusted bot user IDs, required when enabled.
+- `TEXT_BOT_CHAT_MAX_REPLIES`: automatic reply events per bot/channel, default3,
+  range1–10. The counter persists through restart; a human explicitly mentioning
+  this bot or a trusted peer resets the counter for that channel.
+
+Only a direct user mention of this bot from a listed peer is accepted in a guild.
+Self messages, unlisted bots, webhooks and peer commands are ignored. Existing
+text guild/channel/role permissions and queue limits still apply. Peer turns
+are text only: they never fetch photos or execute image tools. Each bot has its
+own budget, including unsuccessful reply events; no automatic timed reset.
+Passive listening/word triggers do not activate peer conversations. Personas
+and command prefixes need no changes. Set the option false to disable it.
