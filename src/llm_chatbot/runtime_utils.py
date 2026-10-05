@@ -44,18 +44,28 @@ def _chunk_message(text: str, limit: int = 1990) -> list[str]:
 
 
 def render_custom_emojis(text: str, guild) -> str:
-    """Resolve known guild shortcodes, preserving code spans and existing tokens."""
+    """Render guild shortcodes and repair ID-bearing tokens outside code spans."""
     if not guild:
         return text
     codes = {}
+    ids = {}
     for emoji in getattr(guild, "emojis", []):
         key = emoji.name.casefold()
         value = str(emoji)
         codes[key] = value if key not in codes else None
+        ids[str(emoji.id)] = value
     sections = re.split(r"(```[\s\S]*?(?:```|$)|`[^`\n]*`)", text)
-    pattern = re.compile(r"(?<![<\w\\]):([A-Za-z0-9_]{2,32}):(?!\w)")
+    # Consume unknown angle tokens whole so their inner shortcode is not changed.
+    # The guild ID lookup supplies the canonical name and animated/static prefix.
+    pattern = re.compile(r"\\?<(?:(?:a)?:)?[A-Za-z0-9_]{2,32}:([0-9]+)>|(?<![<\w\\]):([A-Za-z0-9_]{2,32}):(?!\w)")
+
+    def render(match):
+        if match[1] is not None:
+            return ids.get(match[1]) or match[0]
+        return codes.get(match[2].casefold()) or match[0]
+
     for index in range(0, len(sections), 2):
-        sections[index] = pattern.sub(lambda m: codes.get(m[1].casefold()) or m[0], sections[index])
+        sections[index] = pattern.sub(render, sections[index])
     return "".join(sections)
 
 
