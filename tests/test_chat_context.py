@@ -174,7 +174,7 @@ def test_addressed_messages_queue_with_previous_answer_and_without_future_inputs
         assert not two.done() and len(inputs) == 1
         release.set()
         await asyncio.gather(one, two)
-        bodies = [v.split("\n", 1)[-1] if v.startswith("[Discord message metadata:") else v for v in inputs[1]]
+        bodies = inputs[1]
         assert "Alice: first" in bodies and "answer 1" in bodies
         assert bodies.index("answer 1") < bodies.index("Bob: second")
         assert "Alice: future comment" not in bodies

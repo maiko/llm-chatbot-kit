@@ -15,7 +15,7 @@ from typing import List
 import discord
 from discord.ext import commands
 
-from .chat_context import annotate_history, current_request_context, message_metadata
+from .chat_context import clean_history, current_request_context, history_context, message_metadata, strip_metadata_headers
 from .commands import register_commands
 from .config import Config
 from .costs import rollover_if_needed, usd_cost
@@ -184,7 +184,7 @@ def build_bot(cfg: Config, personality: Personality, *, stream: bool = True) -> 
         """Remove a leading mention of the bot itself from text (e.g., '<@id>' or '<@!id>')."""
         if not text or not bot.user:
             return text
-        toks = [f"<@{bot.user.id}", f"<@!{bot.user.id}"]
+        toks = [f"<@{bot.user.id}>", f"<@!{bot.user.id}>"]
         out = text
         changed = True
         while changed:
@@ -596,9 +596,9 @@ def build_bot(cfg: Config, personality: Personality, *, stream: bool = True) -> 
             store.save()
 
         convo = _conversation(
-            annotate_history(history),
+            clean_history(history),
             personality.system_prompt + (env_context or ""),
-            dev_base,
+            history_context(history) + dev_base,
             remaining,
             add_meta=not truncation_active,
         )
@@ -709,7 +709,7 @@ def build_bot(cfg: Config, personality: Personality, *, stream: bool = True) -> 
                     )
                 input_tokens, output_tokens, cached_tokens = usage
                 # Sanitize leading self-mention; allow user mentions (block roles/everyone)
-                final_text = render_custom_emojis(_strip_leading_self_mention(final_text), message.guild)
+                final_text = render_custom_emojis(_strip_leading_self_mention(strip_metadata_headers(final_text)), message.guild)
                 if intervened and personality.listen.response_max_chars:
                     final_text = final_text[: max(0, int(personality.listen.response_max_chars))]
                 no_pings = discord.AllowedMentions(everyone=False, users=True, roles=False, replied_user=False)
