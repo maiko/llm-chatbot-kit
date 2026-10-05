@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 
 from .image_client import ImageError
 
@@ -129,6 +130,7 @@ def tool_guidance(cfg, default_preset=None, source=None) -> str:
         "subject and requested details, describing composition, lighting and style clearly. "
         "Call at most one tool, with one image. Never claim an image is generated or delivered before tool execution. "
         "When generating an image, call the tool directly without a text preamble; "
+        "use the API tool_calls field, never write tool calls or call tags in message content; "
         "include a concise summary in the user's language in the tool arguments; "
         "the application sends the acknowledgement before publishing a separate progress message and eventual image. "
         f"Default preset: {default_preset or cfg.default_preset}. Size limits per preset: {json.dumps(limits)}.\n"
@@ -154,6 +156,14 @@ def unique_object(pairs):
     return result
 
 
+def _has_unexecuted_tool_text(content):
+    """Detect leaked tool call envelopes outside Markdown code, without parsing args."""
+    if not isinstance(content, str):
+        return False
+    sections = re.split(r"(```[\s\S]*?(?:```|$)|`[^`\n]*`)", content)
+    return any(re.search(r"<(?:call:(?:generate_image|edit_image)\s*\{|\|tool_call\>|tool_call>)", section) for section in sections[::2])
+
+
 async def complete_with_image_tool(client, feature, conversation, message, source=None):
     augmented = conversation + [
         {
@@ -163,7 +173,30 @@ async def complete_with_image_tool(client, feature, conversation, message, sourc
             ),
         }
     ]
-    response, usage = await client.complete_message(augmented, image_tools(feature.cfg, source))
+    tools = image_tools(feature.cfg, source)
+    response, usage = await client.complete_message(augmented, tools)
+    if not response.get("tool_calls") and _has_unexecuted_tool_text(response.get("content")):
+        # Only repair a completed, unexecuted response. Never retry admission or
+        # a timeout/ambiguous response, and never parse executable arguments from text.
+        logger.warning("image_tool textual_call_repair")
+        correction = augmented + [
+            {
+                "role": "system",
+                "content": (
+                    "Your last response wrote an image tool invocation as plain text. Nothing was executed. "
+                    "For the current user's request, use the provided API tools to generate/edit the image; "
+                    "never write call tags or tool arguments in your message content. "
+                    "If the current user is only discussing or quoting an example, answer normally without a tool. "
+                    "Preserve the current user's subject and requested details."
+                ),
+            }
+        ]
+        response, repaired_usage = await client.complete_message(correction, tools)
+        usage = tuple(a + b for a, b in zip(usage, repaired_usage))
+        if _has_unexecuted_tool_text(response.get("content")):
+            # A second malformed completion is a clear failure, not a raw command
+            # posted to Discord or a guessed image request.
+            return tool_error(feature.language, "invalid_tool_call"), usage
     receipt = await image_tool_receipt(feature, response, message, source)
     if receipt is None:
         if not isinstance(response.get("content"), str):
