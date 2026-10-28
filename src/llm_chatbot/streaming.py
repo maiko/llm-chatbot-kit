@@ -20,6 +20,7 @@ from typing import Any, AsyncIterator, Dict, List, Optional
 import discord
 from discord.errors import HTTPException
 
+from .chat_context import clean_metadata_deltas
 from .logging_setup import get_trace_openai_mode
 
 # Boundaries where we prefer to flush chunks
@@ -233,6 +234,7 @@ async def send_stream_as_messages(
     - First burst ASAP after ≥1 completed line; subsequent bursts after ~2 lines
     - Respects sentence/newline boundaries and a light rate limit (~1.3 msg/s)
     - Obeys Discord's ~2000 char limit per message
+    - Removes reserved internal metadata headers before delivery and character caps
 
     The gate is checked for every physical Discord message, including the final
     tail and capped replies. A denial raises rather than reporting unsent text
@@ -257,7 +259,7 @@ async def send_stream_as_messages(
     last_send = 0.0
 
     async with channel.typing():
-        async for d in delta_iter:
+        async for d in clean_metadata_deltas(delta_iter):
             buf += d
             full += d
             # Find the last boundary (newline run, or punctuation+whitespace) and

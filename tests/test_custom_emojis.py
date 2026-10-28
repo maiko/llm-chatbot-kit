@@ -60,3 +60,129 @@ def test_prefix_emoji_list_uses_actual_library_codes(tmp_path):
         await bot.close()
 
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    "input_text,expected",
+    [
+        ("hi :fixture_0: :FIXTURE_1:", "hi <:fixture_0:1000> <a:fixture_1:1001>"),
+        ("missing :blobfail:", "missing :blobfail:"),
+        ("<:fixture_0:1000> <a:fixture_1:1001>", "<:fixture_0:1000> <a:fixture_1:1001>"),
+        ("`:fixture_0:` ```\n:fixture_1:\n``` :fixture_0:", "`:fixture_0:` ```\n:fixture_1:\n``` <:fixture_0:1000>"),
+        (r"\:fixture_0:", r"\:fixture_0:"),
+    ],
+)
+def test_known_shortcodes_render_without_inventing_or_changing_code(input_text, expected):
+    from llm_chatbot.runtime_utils import render_custom_emojis
+
+    assert render_custom_emojis(input_text, SimpleNamespace(emojis=real_emojis())) == expected
+    assert render_custom_emojis(input_text, None) == input_text
+
+
+def test_ambiguous_emoji_names_are_not_guessed_and_tokens_stay_whole():
+    from llm_chatbot.runtime_utils import _chunk_message, render_custom_emojis
+
+    guild = SimpleNamespace(emojis=real_emojis() + real_emojis())
+    assert render_custom_emojis(":fixture_0:", guild) == ":fixture_0:"
+    assert render_custom_emojis("<a:fixture_0:9999>", guild) == "<a:fixture_0:9999>"
+    token = "<a:fixture_1:1001>"
+    text = "x" * 1985 + token + "tail"
+    chunks = _chunk_message(text)
+    assert "".join(chunks) == text and token in chunks[1]
+
+
+def test_runtime_renders_emotes_in_nonstream_response(monkeypatch, tmp_path):
+    from llm_chatbot.discord_bot import build_bot
+    from test_chat_context import context_fixture
+
+    cfg, _, persona, channel, message = context_fixture(monkeypatch, tmp_path)
+
+    async def scenario():
+        bot = build_bot(cfg, persona, stream=False)
+        bot.process_commands = AsyncMock()
+        bot._connection.user = SimpleNamespace(id=555, mentioned_in=lambda m: m.addressed)
+        bot.text_backend.complete = AsyncMock(return_value=("hi <:fixture_1:101>", (1, 1, 0)))
+        m = message("hello", True)
+        m.guild.emojis = real_emojis()
+        await bot.on_message(m)
+        assert channel.send.await_args.args[0] == "hi <a:fixture_1:1001>"
+        await bot.close()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    "input_text,expected",
+    [
+        ("hi <fixture_0:1000> <fixture_1:1001>", "hi <:fixture_0:1000> <a:fixture_1:1001>"),
+        ("<a:fixture_0:1000> <:fixture_1:1001>", "<:fixture_0:1000> <a:fixture_1:1001>"),
+        ("<wrong_name:1000> <a:WRONG_NAME:1001>", "<:fixture_0:1000> <a:fixture_1:1001>"),
+        (r"\<fixture_0:1000> \<:fixture_1:1001>", "<:fixture_0:1000> <a:fixture_1:1001>"),
+        ("<fixture_0:9999> <:fixture_1:9999> <missing:9999>", "<:fixture_0:1000> <a:fixture_1:1001> <missing:9999>"),
+        ("<a:FIXTURE_0:100> <:fixture_1:100> <missing:1000>", "<:fixture_0:1000> <a:fixture_1:1001> <:fixture_0:1000>"),
+        (
+            "`<fixture_0:1000>` ```\n<fixture_1:1001>\n``` <fixture_0:1000>",
+            "`<fixture_0:1000>` ```\n<fixture_1:1001>\n``` <:fixture_0:1000>",
+        ),
+        ("<fixture_0:1000>:fixture_1:", "<:fixture_0:1000><a:fixture_1:1001>"),
+    ],
+)
+def test_id_tokens_use_actual_guild_metadata_without_guessing(input_text, expected):
+    from llm_chatbot.runtime_utils import render_custom_emojis
+
+    guild = SimpleNamespace(emojis=real_emojis())
+    assert render_custom_emojis(input_text, guild) == expected
+    assert render_custom_emojis(expected, guild) == expected
+    assert render_custom_emojis(input_text, None) == input_text
+
+
+@pytest.mark.parametrize(
+    "input_text,expected",
+    [
+        ("<:fixture_0:> <:fixture_1:>", "<:fixture_0:1000> <a:fixture_1:1001>"),
+        ("<a:fixture_0:><a:FIXTURE_1:>", "<:fixture_0:1000><a:fixture_1:1001>"),
+        ("<fixture_0:> <:fixture_1>", "<:fixture_0:1000> <a:fixture_1:1001>"),
+        ("<a:fixture_0> <:fixture_1:0>", "<:fixture_0:1000> <a:fixture_1:1001>"),
+        ("<:unknown:> <unknown> <fixture_0>", "<:unknown:> <unknown> <fixture_0>"),
+        (
+            "`<:fixture_0:>` ```\n<:fixture_1>\n``` <:fixture_0:>",
+            "`<:fixture_0:>` ```\n<:fixture_1>\n``` <:fixture_0:1000>",
+        ),
+    ],
+)
+def test_missing_id_emoji_forms_use_authoritative_guild_codes(input_text, expected):
+    from llm_chatbot.runtime_utils import render_custom_emojis
+
+    guild = SimpleNamespace(emojis=real_emojis())
+    assert render_custom_emojis(input_text, guild) == expected
+    assert render_custom_emojis(expected, guild) == expected
+    assert render_custom_emojis(input_text, None) == input_text
+
+
+def test_missing_id_emoji_with_ambiguous_name_is_not_guessed():
+    from llm_chatbot.runtime_utils import render_custom_emojis
+
+    guild = SimpleNamespace(emojis=real_emojis() + real_emojis())
+    assert render_custom_emojis("<:fixture_0:> <:fixture_1>", guild) == "<:fixture_0:> <:fixture_1>"
+
+
+def test_runtime_repairs_missing_emoji_ids_and_requester_mention_before_send_and_store(monkeypatch, tmp_path):
+    from llm_chatbot.discord_bot import build_bot
+    from test_chat_context import context_fixture
+
+    cfg, store, persona, channel, message = context_fixture(monkeypatch, tmp_path)
+
+    async def scenario():
+        bot = build_bot(cfg, persona, stream=False)
+        bot.process_commands = AsyncMock()
+        bot._connection.user = SimpleNamespace(id=555, mentioned_in=lambda m: m.addressed)
+        bot.text_backend.complete = AsyncMock(return_value=("**<@2222333344445566>** Hello. <:fixture_0:> <:fixture_1:>", (1, 1, 0)))
+        m = message("test", True, user=222233334444555566)
+        m.guild.emojis = real_emojis()
+        await bot.on_message(m)
+        expected = "**<@222233334444555566>** Hello. <:fixture_0:1000> <a:fixture_1:1001>"
+        assert channel.send.await_args.args[0] == expected
+        assert store.get(2).messages[-1]["content"] == expected
+        await bot.close()
+
+    asyncio.run(scenario())

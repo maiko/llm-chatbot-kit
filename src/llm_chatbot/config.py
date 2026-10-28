@@ -33,6 +33,27 @@ class Config:
     ready_file: Path | None = None
     text_api_key: str | None = None
     text_queue_limit: int = 20
+    text_bot_chat_enabled: bool = False
+    text_bot_chat_peer_ids: frozenset[int] = frozenset()
+    text_bot_chat_max_replies: int = 3
+    text_vision_enabled: bool = False
+    text_max_tokens: int = 1024
+    text_tool_max_tokens: int = 4096
+    text_timeout_seconds: int = 300
+
+    def __post_init__(self):
+        if type(self.text_bot_chat_max_replies) is not int or not 1 <= self.text_bot_chat_max_replies <= 10:
+            raise ValueError("TEXT_BOT_CHAT_MAX_REPLIES must be an integer from 1 to 10")
+        if any(type(peer) is not int or peer <= 0 for peer in self.text_bot_chat_peer_ids):
+            raise ValueError("TEXT_BOT_CHAT_PEER_IDS must contain positive numeric IDs")
+        if self.text_bot_chat_enabled and (not self.text_enabled or not self.text_bot_chat_peer_ids):
+            raise ValueError("TEXT_BOT_CHAT_ENABLED requires text mode and nonempty TEXT_BOT_CHAT_PEER_IDS")
+        for name in ("text_max_tokens", "text_tool_max_tokens"):
+            value = getattr(self, name)
+            if type(value) is not int or not 1 <= value <= 16384:
+                raise ValueError(f"{name.upper()} must be an integer from 1 to 16384")
+        if type(self.text_timeout_seconds) is not int or not 30 <= self.text_timeout_seconds <= 600:
+            raise ValueError("TEXT_TIMEOUT_SECONDS must be an integer from 30 to 600")
 
 
 def _maybe_migrate_cache(new_dir: Path, new_store: Path) -> None:
@@ -80,6 +101,13 @@ def load_config() -> Config:
         text_api_base_url=os.getenv("TEXT_API_BASE_URL") or None,
         text_api_key=os.getenv("TEXT_API_KEY") or None,
         text_queue_limit=int(os.getenv("TEXT_QUEUE_LIMIT", "20")),
+        text_bot_chat_enabled=os.getenv("TEXT_BOT_CHAT_ENABLED", "false").lower() == "true",
+        text_bot_chat_peer_ids=frozenset(int(v) for v in os.getenv("TEXT_BOT_CHAT_PEER_IDS", "").split(",") if v.strip()),
+        text_bot_chat_max_replies=int(os.getenv("TEXT_BOT_CHAT_MAX_REPLIES", "3")),
+        text_max_tokens=int(os.getenv("TEXT_MAX_TOKENS", "1024")),
+        text_tool_max_tokens=int(os.getenv("TEXT_TOOL_MAX_TOKENS", "4096")),
+        text_timeout_seconds=int(os.getenv("TEXT_TIMEOUT_SECONDS", "300")),
+        text_vision_enabled=os.getenv("TEXT_VISION_ENABLED", "false").lower() == "true",
         text_ca_file=os.getenv("TEXT_CA_FILE") or None,
         text_guild_ids=frozenset(int(v) for v in os.getenv("TEXT_GUILD_IDS", "").split(",") if v.strip()),
         text_channel_ids=frozenset(int(v) for v in os.getenv("TEXT_CHANNEL_IDS", "").split(",") if v.strip()),

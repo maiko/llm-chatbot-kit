@@ -24,3 +24,5 @@ emoji_none: "This server has no custom emojis."
 truncation_usage: "Usage: {prefix}truncation [status|set <auto|disabled>]"
 truncation_status: "Truncation: {value} (default: {default})"
 truncation_set: "Truncation set to: {value}"
+
+text_response_truncated: "The model reached its output limit before completing its reply. No incomplete tool call was executed. The request is not retried automatically."
