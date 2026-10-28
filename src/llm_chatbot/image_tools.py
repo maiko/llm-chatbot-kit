@@ -82,7 +82,11 @@ def image_tool(cfg) -> dict:
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "prompt": {"type": "string", "minLength": 1, "maxLength": 4000},
+                    "prompt": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": max(options.get("max_prompt_chars", 4000) for options in cfg.presets.values()),
+                    },
                     "summary": {
                         "type": "string",
                         "minLength": 1,
@@ -119,7 +123,14 @@ def tool_guidance(cfg, default_preset=None, source=None) -> str:
     limits = {
         name: {
             key: options.get(key, default)
-            for key, default in (("min_size", 64), ("max_size", 2048), ("size_multiple", 1), ("max_pixels", 4194304))
+            for key, default in (
+                ("min_size", 64),
+                ("max_size", 2048),
+                ("size_multiple", 1),
+                ("max_pixels", 4194304),
+                ("allowed_sizes", None),
+                ("max_prompt_chars", 4000),
+            )
         }
         for name, options in cfg.presets.items()
     }
