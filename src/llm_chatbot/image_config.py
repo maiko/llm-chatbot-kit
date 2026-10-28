@@ -38,8 +38,11 @@ class ImageConfig:
     quality_rerun_enabled: bool = False
     edits_enabled: bool = False
     slash_commands_enabled: bool = True
+    api_style: str = "openai"
 
     def __post_init__(self):
+        if self.api_style not in {"openai", "venice"}:
+            raise ValueError("IMAGE_API_STYLE must be openai or venice")
         if not isinstance(self.mode_presets, dict):
             raise ValueError("IMAGE_MODE_PRESETS_JSON must be an object")
         if self.mode_presets and (
@@ -69,10 +72,25 @@ class ImageConfig:
                 "max_pixels",
                 "supports_seed",
                 "supports_edits",
+                "edit_model",
+                "allowed_sizes",
+                "max_prompt_chars",
             }:
                 raise ValueError("Unknown image preset option")
             if not isinstance(options.get("model"), str) or not 1 <= len(options["model"]) <= 128:
                 raise ValueError("Each image preset requires a model ID")
+            if "edit_model" in options and (not isinstance(options["edit_model"], str) or not 1 <= len(options["edit_model"]) <= 128):
+                raise ValueError("Invalid image edit model")
+            if "allowed_sizes" in options and (
+                not isinstance(options["allowed_sizes"], list)
+                or not 1 <= len(options["allowed_sizes"]) <= 25
+                or any(not isinstance(size, str) or not re.fullmatch(r"[0-9]{1,4}x[0-9]{1,4}", size) for size in options["allowed_sizes"])
+            ):
+                raise ValueError("Invalid image allowed sizes")
+            if "max_prompt_chars" in options and (
+                type(options["max_prompt_chars"]) is not int or not 1 <= options["max_prompt_chars"] <= 4000
+            ):
+                raise ValueError("Invalid image prompt limit")
             if "quality" in options and (not isinstance(options["quality"], str) or not 1 <= len(options["quality"]) <= 64):
                 raise ValueError("Invalid image preset quality")
             for key, default in (("size_multiple", 1), ("min_size", 64), ("max_size", 2048), ("max_pixels", 4194304)):
@@ -95,6 +113,7 @@ class ImageConfig:
     def from_env(cls) -> ImageConfig:
         cfg = cls(
             base_url=os.getenv("IMAGE_API_BASE_URL", "").rstrip("/"),
+            api_style=os.getenv("IMAGE_API_STYLE", "openai"),
             api_key=os.getenv("IMAGE_API_KEY", ""),
             guild_ids=_ids("IMAGE_GUILD_IDS"),
             channel_ids=_ids("IMAGE_CHANNEL_IDS"),

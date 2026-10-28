@@ -115,7 +115,13 @@ Preset names contain 1–32 lowercase letters, digits, underscores or hyphens.
 Unknown settings and invalid limits fail startup. A preset's model ID is required;
 quality is omitted unless configured. Default size constraints are 64–2048 per
 edge, multiples of 1 and at most 4,194,304 pixels; configure them to match your API.
-The slash size defaults to 1024×1024. Prompt limit is 4000 characters.
+The slash size defaults to 1024×1024. Prompt limit is 4000 characters. Optional
+`max_prompt_chars` (1–4000) lowers that limit per preset; `allowed_sizes` lists
+the exact generation dimensions accepted by the API. These constraints are
+validated before queue admission and supplied to conversational image tools.
+Retouch source dimensions still follow the normalized source rather than the
+generation-only size list. Optional `edit_model` selects a separate retouch model
+without changing the preset used for generation.
 
 Seed is a decimal string to preserve the full 63-bit range through Discord.
 Only `supports_seed=true` sends the `seed` extension; supplied seeds are refused
@@ -339,7 +345,20 @@ For retouching, enable `IMAGE_EDITS_ENABLED=true` and mark tested presets with
 `"supports_edits":true`. The configured image API must implement authenticated
 multipart `POST /images/edits`, returning the same inline PNG response as
 `/images/generations`. Fields are the validated prompt/model/size/options plus
-one `image` file. Output size follows the normalized source. The kit does not
+one `image` file. Output size follows the normalized source.
+
+`IMAGE_API_STYLE=venice` selects Venice's native multipart `POST /image/edit`
+for retouching, with prompt/model/output_format fields and a binary image response.
+Configure the preset's `edit_model` and qualify it separately from its generation
+model. Generation continues through `/images/generations`; JPEG or WebP results
+are converted to PNG in a worker thread, with byte/pixel/frame limits. This keeps
+the existing PNG delivery/recovery contract even when a provider ignores the
+requested output format. Output resolution is preserved; the image caption uses
+the returned PNG dimensions rather than assuming the requested dimensions. The default `openai` style retains the original wire
+contract. Seed-based quality reruns and progress polling should only be enabled
+when the configured provider supports those protocols.
+
+The kit does not
 fetch model-supplied URLs or images embedded in arbitrary web links.
 
 `/image-edit image:<attachment> prompt:<instruction> [mode:fast|quality]`

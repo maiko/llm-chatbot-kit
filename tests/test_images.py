@@ -621,7 +621,18 @@ def test_status_position_cancellation_restart_and_pause(tmp_path):
 
 
 @pytest.mark.parametrize("prompt", ["lighthouse", "é" * 2500])
-def test_delivery_edits_status_and_refresh_never_overwrites_image(tmp_path, prompt):
+@pytest.mark.parametrize("output_2k", [False, True])
+def test_delivery_edits_status_and_refresh_never_overwrites_image(tmp_path, prompt, output_2k):
+    import io
+
+    from PIL import Image
+
+    artifact = PNG
+    if output_2k:
+        buffer = io.BytesIO()
+        Image.new("1", (2048, 2048)).save(buffer, format="PNG")
+        artifact = buffer.getvalue()
+
     async def scenario():
         bot = commands.Bot(command_prefix="~", intents=discord.Intents.none())
         feature = __import__("llm_chatbot.image_commands", fromlist=["ImageCommands"]).ImageCommands(
@@ -649,12 +660,13 @@ def test_delivery_edits_status_and_refresh_never_overwrites_image(tmp_path, prom
         bot.wait_until_ready = AsyncMock()
         bot.get_channel = lambda _: channel
         await feature.status.publish(job, channel)
-        feature.worker.client.generate = AsyncMock(return_value=PNG)
+        feature.worker.client.generate = AsyncMock(return_value=artifact)
         await feature.worker.process(job)
         assert feature.store.get("100")["state"] == "sent"
         channel.send.assert_awaited_once()
         assert message.edit.await_args.kwargs["attachments"][0].filename == "image-100.png"
         assert "seed 7" in message.edit.await_args.kwargs["content"]
+        assert ("2048x2048" if output_2k else "1024x1024") in message.edit.await_args.kwargs["content"]
         if len(prompt) < 2000:
             assert prompt in message.edit.await_args.kwargs["content"]
             assert len(uploaded) == 1
@@ -1524,3 +1536,109 @@ def test_acknowledgement_failure_keeps_admitted_job_and_status(tmp_path):
         await bot.close()
 
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("operation", ["generate", "edit"])
+def test_alternate_image_api_preserves_png_delivery_and_uses_configured_edit_model(tmp_path, operation):
+    import io
+
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.new("RGB", (64, 96), "blue").save(buf, format="JPEG")
+    jpeg = buf.getvalue()
+    presets = {"default": {"model": "generation-model", "edit_model": "edit-model", "supports_edits": True}}
+
+    async def handler(request):
+        if operation == "edit":
+            assert request.url.path == "/v1/image/edit"
+            body = request.content
+            assert b'form-data; name="image"; filename="source.png"' in body
+            assert b"edit-model" in body and b"generation-model" not in body
+            assert b'form-data; name="output_format"' in body and b"png" in body
+            assert b'form-data; name="size"' not in body
+            return httpx.Response(200, content=jpeg)
+        assert request.url.path == "/v1/images/generations"
+        body = json.loads(request.content)
+        assert body["model"] == "generation-model" and body["output_format"] == "png"
+        return httpx.Response(200, json={"data": [{"b64_json": base64.b64encode(jpeg).decode()}]})
+
+    async def scenario():
+        client = ImageClient(settings(tmp_path, presets=presets, api_style="venice"), httpx.MockTransport(handler))
+        payload = make_request("blue", "default", "1024x1024", None, presets, is_edit=operation == "edit")
+        original = dict(payload)
+        result = await client.generate(payload, source=PNG if operation == "edit" else None)
+        assert payload == original
+        with Image.open(io.BytesIO(result)) as image:
+            image.load()
+            assert image.format == "PNG" and image.size == (64, 96)
+        await client.close()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("response_kind", ["json", "html", "redirect", "timeout", "server"])
+def test_native_edit_failures_never_retry_or_follow_urls(tmp_path, response_kind):
+    calls = []
+
+    async def handler(request):
+        calls.append(request)
+        if response_kind == "redirect":
+            return httpx.Response(302, headers={"Location": "https://external.invalid/image"})
+        if response_kind == "timeout":
+            raise httpx.ReadTimeout("fixture", request=request)
+        if response_kind == "server":
+            return httpx.Response(503)
+        return httpx.Response(
+            200, content=b'{"url":"https://external.invalid/image"}' if response_kind == "json" else b"<html>error</html>"
+        )
+
+    async def scenario():
+        client = ImageClient(settings(tmp_path, api_style="venice"), httpx.MockTransport(handler))
+        with pytest.raises(ImageError):
+            await client.generate(validate_request("x", "default", "1024x1024", None), source=PNG)
+        assert len(calls) == 1
+        await client.close()
+
+    asyncio.run(scenario())
+
+
+def test_provider_image_normalization_rejects_oversize_pixels_before_decoding(monkeypatch):
+    from llm_chatbot.image_client import _provider_png
+
+    image = SimpleNamespace(width=8192, height=8192)
+
+    class Opened:
+        def __enter__(self):
+            return image
+
+        def __exit__(self, *_):
+            pass
+
+    monkeypatch.setattr("llm_chatbot.image_client.Image.open", lambda *a, **kw: Opened())
+    with pytest.raises(ImageError, match="invalid_response"):
+        _provider_png(b"fixture")
+
+
+def test_provider_size_and_prompt_constraints_apply_before_admission(tmp_path):
+    presets = {"default": {"model": "image-model", "allowed_sizes": ["1024x1024"], "max_prompt_chars": 10}}
+    assert make_request("sunset", "default", "1024x1024", None, presets)["prompt"] == "sunset"
+    with pytest.raises(ImageError, match="invalid_prompt"):
+        make_request("longer than ten", "default", "1024x1024", None, presets)
+    with pytest.raises(ImageError, match="invalid_size"):
+        make_request("sunset", "default", "768x1024", None, presets)
+    assert make_request("edit", "default", "768x1024", None, presets, is_edit=True)["size"] == "768x1024"
+
+
+@pytest.mark.parametrize(
+    "option,value",
+    [("edit_model", ""), ("allowed_sizes", []), ("allowed_sizes", ["auto"]), ("max_prompt_chars", True), ("max_prompt_chars", 4001)],
+)
+def test_provider_preset_configuration_rejects_invalid_options(tmp_path, option, value):
+    with pytest.raises(ValueError):
+        settings(tmp_path, presets={"default": {"model": "image-model", option: value}})
+
+
+def test_unknown_image_api_style_fails_startup(tmp_path):
+    with pytest.raises(ValueError, match="IMAGE_API_STYLE"):
+        settings(tmp_path, api_style="unknown")

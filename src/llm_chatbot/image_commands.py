@@ -117,7 +117,7 @@ class ImageCommands:
         summary = arguments.get("summary")
         if summary is not None and (not isinstance(summary, str) or not summary.strip() or len(summary) > 160):
             raise ImageError("invalid_tool_arguments")
-        payload = validate_request(prompt, preset, size, None, self.cfg.presets)
+        payload = validate_request(prompt, preset, size, None, self.cfg.presets, is_edit=source is not None)
         summary = " ".join((summary or " ".join(prompt.split()[:12])).split())[:160]
         summary = discord.utils.escape_mentions(discord.utils.escape_markdown(summary))
         username = discord.utils.escape_mentions(
@@ -167,12 +167,19 @@ class ImageCommands:
         if path.stat().st_size > min(job["filesize_limit"], channel.guild.filesize_limit):
             raise ImageError("attachment_too_large")
         options = json.loads(job["options"] or "{}")
+        size = options.get("size", "?")
+        with path.open("rb") as artifact:
+            header = artifact.read(24)
+        if len(header) == 24 and header[:8] == b"\x89PNG\r\n\x1a\n" and header[12:16] == b"IHDR":
+            width, height = int.from_bytes(header[16:20], "big"), int.from_bytes(header[20:24], "big")
+            if 0 < width <= 8192 and 0 < height <= 8192:
+                size = f"{width}x{height}"
         caption = text(
             job["language"],
             "result",
             id=job["id"],
             preset=options.get("model", "image"),
-            size=options.get("size", "?"),
+            size=size,
             seed=options.get("seed", "?"),
         )
         if options.get("operation") == "edit":
@@ -305,7 +312,7 @@ class ImageCommands:
                     source = await read_attachment(image)
                     if not self.allowed(interaction) or not interaction.channel.permissions_for(interaction.user).view_channel:
                         raise ImageError("requester_access_revoked")
-                    payload = validate_request(prompt, preset, source.size, None, self.cfg.presets)
+                    payload = validate_request(prompt, preset, source.size, None, self.cfg.presets, is_edit=True)
                     job = await self.enqueue(
                         interaction.id,
                         interaction.user.id,
@@ -456,7 +463,9 @@ class ImageCommands:
             preset = self.cfg.mode_presets["quality"]
             if source is not None and (not self.cfg.edits_enabled or not self.cfg.presets[preset].get("supports_edits", False)):
                 raise ImageError("image_edit_unsupported")
-            payload = validate_request(options["prompt"], preset, options["size"], options["seed"], self.cfg.presets)
+            payload = validate_request(
+                options["prompt"], preset, options["size"], options["seed"], self.cfg.presets, is_edit=source is not None
+            )
             queued = await self.enqueue(
                 interaction.id,
                 interaction.user.id,
